@@ -1,0 +1,64 @@
+# ──────────────────────────────────────────────
+# Astra Agent — default configuration
+# ──────────────────────────────────────────────
+# Values here are the baseline defaults.
+# Override per-environment via a custom YAML file
+# or with ASTRA_-prefixed environment variables.
+#
+# Env-var mapping uses double-underscore for nesting:
+#   ASTRA_LLM__PROVIDER=anthropic
+#   ASTRA_WORDPRESS__URL=https://example.com
+# ──────────────────────────────────────────────
+
+llm:
+  # "openai" or "anthropic"
+  provider: "openai"
+  model: "gpt-4o"
+  temperature: 0.7
+  max_tokens: 4096
+  # Set via ASTRA_LLM__API_KEY or in a local override file
+  api_key: ""
+
+wordpress:
+  url: "http://localhost:8080"
+  username: "admin"
+  # Application password — keep out of version control
+  app_password: ""
+
+twitter:
+  # Twitter / X API v2 credentials
+  api_key: ""
+  api_secret: ""
+  access_token: ""
+  access_secret: ""
+  bearer_token: ""
+
+linkedin:
+  access_token: ""
+  organization_id: ""
+
+twitter_bot:
+  enabled: false
+  # Keywords the bot monitors for engagement
+  search_keywords:
+    - "WordPress"
+    - "blogging tips"
+  # Maximum interactions per scheduled run
+  max_interactions_per_run: 10
+  # Cooldown in seconds between interactions
+  cooldown_seconds: 30
+
+scheduler:
+  # Enable or disable the background scheduler
+  enabled: true
+  # Cron expression: every day at 09:00 UTC
+  post_cron: "0 9 * * *"
+  # Cron expression: every 6 hours
+  share_cron: "0 */6 * * *"
+  # Cron expression: every 2 hours
+  engage_cron: "0 */2 * * *"
+
+# Path to the SQLite database file (relative to project root)
+database_path: "data/astra.db"
+# Logging level: debug, info, warning, error
+log_level: "info"
