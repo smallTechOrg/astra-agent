@@ -75,6 +75,11 @@ Copy the example env file and fill in your API keys:
 cp .env.example .env
 ```
 
+> **Note:** Values containing spaces (like WordPress app passwords) must be quoted in `.env`:
+> ```bash
+> ASTRA_WORDPRESS__APP_PASSWORD="320b fzQS kdNJ VLYL qvl7 GEqV"
+> ```
+
 **Required** (minimum to generate posts):
 - `ASTRA_LLM__API_KEY` — OpenAI or Anthropic API key
 - `ASTRA_WORDPRESS__URL` — your WordPress site URL
@@ -82,11 +87,34 @@ cp .env.example .env
 
 **Optional** (for social distribution):
 - `ASTRA_TWITTER__*` — Twitter API v2 credentials (all 5 fields needed)
-- `ASTRA_LINKEDIN__ACCESS_TOKEN` — LinkedIn OAuth2 token
+- `ASTRA_LINKEDIN__ACCESS_TOKEN` — LinkedIn OAuth2 token (run `astra auth linkedin` to get one)
+
+**For Groq instead of OpenAI/Anthropic:**
+- `ASTRA_LLM__PROVIDER=groq`
+- `ASTRA_LLM__API_KEY=gsk_...`
+- `ASTRA_LLM__MODEL=llama-3.3-70b-versatile`
 
 You can also configure via `config/default.yaml` or a custom YAML file passed with `--config`.
 
-### 3. Use
+### 3. Get a LinkedIn Access Token (if using LinkedIn)
+
+LinkedIn requires OAuth2. Astra handles the full browser flow for you:
+
+```bash
+# One-time setup: add http://localhost:8989/callback as a redirect URL in your
+# LinkedIn app at https://www.linkedin.com/developers/apps, then run:
+astra auth linkedin --client-id <YOUR_CLIENT_ID> --client-secret <YOUR_SECRET>
+```
+
+This opens your browser, you approve access, and the token is printed to paste into `.env`.
+
+**To post as a company/organization page** (instead of your personal profile), also set:
+```bash
+ASTRA_LINKEDIN__ORGANIZATION_ID=<your_numeric_org_id>
+```
+Find your org ID in the LinkedIn company admin panel — go to your company page admin URL and look for `organizationUrn` in the page source, or check the URL at `linkedin.com/company/<slug>/admin/`. When `ORGANIZATION_ID` is set, all posts go to the company page automatically.
+
+### 4. Use
 
 ```bash
 # Generate a blog post (dry run — no publishing)
@@ -97,6 +125,12 @@ astra generate --topic "Docker for Beginners" --tone casual --word-count 2000
 
 # Generate, publish immediately, with SEO keywords
 astra generate --topic "GraphQL vs REST" --publish --keywords "graphql,rest,api"
+
+# Distribute an existing WordPress post to LinkedIn (no generation needed)
+astra distribute --post-id 42 --linkedin-only
+
+# Distribute to all configured platforms (Twitter + LinkedIn)
+astra distribute --post-id 42
 
 # Check all API connections
 astra health
@@ -113,9 +147,11 @@ astra run --topic "weekly tech insights"
 | Command | Description |
 |---------|-------------|
 | `astra generate` | Generate a blog post from a topic. Options: `--topic`, `--tone`, `--word-count`, `--keywords`, `--publish`, `--dry-run`, `--config` |
+| `astra distribute` | Distribute an existing WordPress post to social platforms. Options: `--post-id`, `--linkedin-only`, `--twitter-only`, `--config` |
 | `astra run` | Start in daemon mode with cron-scheduled jobs. Options: `--topic`, `--tone`, `--word-count`, `--config` |
 | `astra engage` | Run the Twitter engagement bot once. Options: `--config` |
 | `astra health` | Check WordPress, LLM, database, Twitter, and LinkedIn connectivity |
+| `astra auth linkedin` | Get a LinkedIn access token via browser OAuth2 flow. Options: `--client-id`, `--client-secret`, `--port`, `--scope` |
 | `astra version` | Print version |
 
 Global flag: `--json-log` switches log output from colored console to JSON (useful for production/log aggregation).

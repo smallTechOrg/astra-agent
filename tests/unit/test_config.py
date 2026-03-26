@@ -12,35 +12,35 @@ class TestDefaultConfig:
     """Test that AstraConfig can be created with default field values."""
 
     def test_default_llm_provider(self) -> None:
-        cfg = AstraConfig()
+        cfg = AstraConfig(_env_file=None)
         assert cfg.llm.provider == "openai"
 
     def test_default_llm_model(self) -> None:
-        cfg = AstraConfig()
+        cfg = AstraConfig(_env_file=None)
         assert cfg.llm.model == "gpt-4o"
 
     def test_default_llm_temperature(self) -> None:
-        cfg = AstraConfig()
+        cfg = AstraConfig(_env_file=None)
         assert cfg.llm.temperature == 0.7
 
     def test_default_wordpress_url(self) -> None:
-        cfg = AstraConfig()
+        cfg = AstraConfig(_env_file=None)
         assert cfg.wordpress.url == "http://localhost:8080"
 
     def test_default_database_path(self) -> None:
-        cfg = AstraConfig()
+        cfg = AstraConfig(_env_file=None)
         assert cfg.database_path == "data/astra.db"
 
     def test_default_log_level(self) -> None:
-        cfg = AstraConfig()
+        cfg = AstraConfig(_env_file=None)
         assert cfg.log_level == "info"
 
     def test_default_scheduler_enabled(self) -> None:
-        cfg = AstraConfig()
+        cfg = AstraConfig(_env_file=None)
         assert cfg.scheduler.enabled is True
 
     def test_default_twitter_bot_disabled(self) -> None:
-        cfg = AstraConfig()
+        cfg = AstraConfig(_env_file=None)
         assert cfg.twitter_bot.enabled is False
 
 
@@ -67,7 +67,7 @@ class TestYamlLoading:
         config_file = tmp_path / "test_config.yaml"
         config_file.write_text(yaml.dump(config_data))
 
-        cfg = AstraConfig.load(config_path=config_file)
+        cfg = AstraConfig.load(config_path=config_file, _env_file=None)
 
         assert cfg.llm.provider == "anthropic"
         assert cfg.llm.model == "claude-sonnet-4-20250514"
@@ -81,7 +81,7 @@ class TestYamlLoading:
 
     def test_load_missing_file_uses_defaults(self, tmp_path: Path) -> None:
         missing = tmp_path / "does_not_exist.yaml"
-        cfg = AstraConfig.load(config_path=missing)
+        cfg = AstraConfig.load(config_path=missing, _env_file=None)
         # Should fall back to defaults without raising
         assert cfg.llm.provider == "openai"
         assert cfg.database_path == "data/astra.db"
@@ -91,7 +91,7 @@ class TestYamlLoading:
         config_file = tmp_path / "partial.yaml"
         config_file.write_text(yaml.dump(config_data))
 
-        cfg = AstraConfig.load(config_path=config_file)
+        cfg = AstraConfig.load(config_path=config_file, _env_file=None)
 
         assert cfg.log_level == "error"
         # Other fields retain defaults
@@ -102,7 +102,7 @@ class TestYamlLoading:
         config_file = tmp_path / "empty.yaml"
         config_file.write_text("")
 
-        cfg = AstraConfig.load(config_path=config_file)
+        cfg = AstraConfig.load(config_path=config_file, _env_file=None)
         assert cfg.llm.provider == "openai"
 
 

@@ -41,6 +41,7 @@ def engine_config(tmp_path: Path) -> AstraConfig:
         twitter={"bearer_token": ""},  # No social clients
         linkedin={"access_token": ""},
         database_path=str(tmp_path / "engine_test.db"),
+        _env_file=None,
     )
 
 

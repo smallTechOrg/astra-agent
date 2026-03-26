@@ -29,6 +29,11 @@ def create_llm_client(provider: str, api_key: str, model: str) -> LLMClient:
 
         return AnthropicClient(api_key=api_key, model=model)
 
-    supported = ("openai", "anthropic")
+    if provider_lower == "groq":
+        from astra.llm.groq_client import GroqClient
+
+        return GroqClient(api_key=api_key, model=model)
+
+    supported = ("openai", "anthropic", "groq")
     msg = f"Unknown LLM provider {provider!r}. Supported providers: {supported}"
     raise ValueError(msg)

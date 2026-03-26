@@ -88,6 +88,8 @@ class AstraConfig(BaseSettings):
         env_prefix="ASTRA_",
         env_nested_delimiter="__",
         case_sensitive=False,
+        env_file=".env",
+        env_file_encoding="utf-8",
     )
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -108,13 +110,17 @@ class AstraConfig(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Reorder so env vars take priority over init kwargs (YAML)."""
-        return env_settings, init_settings, dotenv_settings, file_secret_settings
+        """Priority: shell env vars > .env file > YAML init kwargs > secrets."""
+        return env_settings, dotenv_settings, init_settings, file_secret_settings
 
     # ── Factory ──────────────────────────────────────────────────
 
     @classmethod
-    def load(cls, config_path: Path | None = None) -> Self:
+    def load(
+        cls,
+        config_path: Path | None = None,
+        _env_file: Path | str | None = ".env",
+    ) -> Self:
         """Build an ``AstraConfig`` from YAML + environment variables.
 
         Parameters
@@ -122,6 +128,9 @@ class AstraConfig(BaseSettings):
         config_path:
             Optional path to a YAML file.  Falls back to
             ``config/default.yaml`` inside the project root.
+        _env_file:
+            Path to the ``.env`` file.  Pass ``None`` to disable ``.env``
+            loading (useful in tests).  Defaults to ``".env"``.
 
         Returns
         -------
@@ -143,4 +152,4 @@ class AstraConfig(BaseSettings):
         # pydantic-settings picks up env vars automatically during init.
         # We pass the YAML data as keyword init values so that env vars
         # (which pydantic-settings reads) still take highest precedence.
-        return cls(**yaml_overrides)
+        return cls(**yaml_overrides, _env_file=_env_file)

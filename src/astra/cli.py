@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import http.server
+import logging
+import secrets
 import signal
 import sys
+import threading
+import webbrowser
 from pathlib import Path
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import click
 import structlog
@@ -36,7 +42,7 @@ def _configure_logging(*, json_output: bool = False, level: str = "INFO") -> Non
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(structlog, level.upper(), structlog.INFO),  # type: ignore[attr-defined]
+            getattr(logging, level.upper(), logging.INFO),
         ),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
@@ -48,6 +54,26 @@ def _load_config(config_path: str | None) -> AstraConfig:
     """Load configuration from an optional YAML path."""
     path = Path(config_path) if config_path else None
     return AstraConfig.load(config_path=path)
+
+
+def _handle_cli_error(exc: Exception, command: str, log: structlog.BoundLogger) -> None:
+    """Print a human-readable error and exit.  Detects connection errors specially."""
+    import httpx
+
+    if isinstance(exc, httpx.ConnectError) or "connection" in str(exc).lower():
+        click.echo(
+            f"\nConnection failed: {exc}\n\n"
+            "Possible causes:\n"
+            "  • ASTRA_WORDPRESS__URL is wrong or unreachable\n"
+            "  • Credentials are missing — check your .env file\n"
+            "  • Network / firewall issue\n\n"
+            "Run `astra health` to diagnose each service.",
+            err=True,
+        )
+    else:
+        log.error(f"{command}_failed", error=str(exc), exc_info=True)
+        click.echo(f"Error: {exc}", err=True)
+    sys.exit(1)
 
 
 # ── CLI group ────────────────────────────────────────────────────
@@ -150,9 +176,7 @@ def generate(
     except KeyboardInterrupt:
         log.info("operation_cancelled")
     except Exception as exc:
-        log.error("generate_failed", error=str(exc), exc_info=True)
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
+        _handle_cli_error(exc, "generate", log)
 
 
 # ── run (daemon mode) ────────────────────────────────────────────
@@ -288,9 +312,72 @@ def engage(ctx: click.Context, config_path: str | None) -> None:
     except KeyboardInterrupt:
         log.info("operation_cancelled")
     except Exception as exc:
-        log.error("engage_failed", error=str(exc), exc_info=True)
-        click.echo(f"Error: {exc}", err=True)
+        _handle_cli_error(exc, "engage", log)
+
+
+# ── distribute ────────────────────────────────────────────────────
+
+
+@main.command()
+@click.option("--post-id", required=True, type=int, help="WordPress post ID to distribute.")
+@click.option(
+    "--linkedin-only", is_flag=True, default=False,
+    help="Only distribute to LinkedIn (skip Twitter).",
+)
+@click.option(
+    "--twitter-only", is_flag=True, default=False,
+    help="Only distribute to Twitter (skip LinkedIn).",
+)
+@click.option(
+    "--config", "config_path", default=None,
+    type=click.Path(exists=False), help=_CONFIG_HELP,
+)
+@click.pass_context
+def distribute(
+    ctx: click.Context,
+    post_id: int,
+    linkedin_only: bool,
+    twitter_only: bool,
+    config_path: str | None,
+) -> None:
+    """Distribute an existing WordPress post to social platforms."""
+    if linkedin_only and twitter_only:
+        click.echo("Cannot use both --linkedin-only and --twitter-only.", err=True)
         sys.exit(1)
+
+    config = _load_config(config_path)
+    _configure_logging(
+        json_output=ctx.obj.get("json_log", False), level=config.log_level,
+    )
+    log = structlog.get_logger("astra.cli")
+
+    platforms: set[str] | None = None
+    if linkedin_only:
+        platforms = {"linkedin"}
+    elif twitter_only:
+        platforms = {"twitter"}
+
+    async def _run() -> None:
+        from astra.core.engine import AstraEngine
+
+        click.echo(f"Fetching WordPress post {post_id}...")
+        async with AstraEngine(config) as engine:
+            results = await engine.distribute_post(post_id, platforms=platforms)
+
+        click.echo("\nDistribution results:")
+        for platform, success in results.items():
+            status = "OK" if success else "FAILED"
+            click.echo(f"  {platform.capitalize()}: {status}")
+
+        if not results:
+            click.echo("  No platforms configured or selected.")
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        log.info("operation_cancelled")
+    except Exception as exc:
+        _handle_cli_error(exc, "distribute", log)
 
 
 # ── health ───────────────────────────────────────────────────────
@@ -394,9 +481,161 @@ def health(ctx: click.Context, config_path: str | None) -> None:
     except KeyboardInterrupt:
         log.info("operation_cancelled")
     except Exception as exc:
-        log.error("health_check_failed", error=str(exc), exc_info=True)
-        click.echo(f"Error: {exc}", err=True)
+        _handle_cli_error(exc, "health", log)
+
+
+# ── auth ──────────────────────────────────────────────────────────
+
+
+@main.group()
+def auth() -> None:
+    """Authentication helpers for social platforms."""
+
+
+@auth.command()
+@click.option(
+    "--client-id", required=True, envvar="LINKEDIN_CLIENT_ID", help="LinkedIn app Client ID.",
+)
+@click.option(
+    "--client-secret", required=True, envvar="LINKEDIN_CLIENT_SECRET",
+    help="LinkedIn app Client Secret.",
+)
+@click.option("--port", default=8989, show_default=True, help="Local callback port.")
+@click.option(
+    "--scope",
+    default="openid profile w_member_social",
+    show_default=True,
+    help="OAuth scopes.",
+)
+def linkedin(client_id: str, client_secret: str, port: int, scope: str) -> None:
+    """Get a LinkedIn access token via browser OAuth2 flow.
+
+    Opens your browser, asks you to approve access, then prints the
+    access token to paste into your .env file.
+
+    Prerequisites (one-time LinkedIn app setup):\n
+      1. Create an app at https://www.linkedin.com/developers/apps\n
+      2. Add http://localhost:{port}/callback as an Authorized Redirect URL\n
+      3. Request the "Share on LinkedIn" product for w_member_social scope
+    """
+    redirect_uri = f"http://localhost:{port}/callback"
+    state = secrets.token_urlsafe(16)
+
+    # Shared container for the callback result
+    result: dict[str, str] = {}
+    server_ready = threading.Event()
+    callback_done = threading.Event()
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != "/callback":
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            params = parse_qs(parsed.query)
+            result["code"] = params.get("code", [""])[0]
+            result["state"] = params.get("state", [""])[0]
+            result["error"] = params.get("error", [""])[0]
+
+            body = (
+                b"<html><body>"
+                b"<h2>You can close this tab and return to the terminal.</h2>"
+                b"</body></html>"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            callback_done.set()
+
+        def log_message(self, fmt: str, *args: object) -> None:  # silence request logs
+            pass
+
+    server = http.server.HTTPServer(("localhost", port), _Handler)
+
+    def _serve() -> None:
+        server_ready.set()
+        while not callback_done.is_set():
+            server.handle_request()
+
+    thread = threading.Thread(target=_serve, daemon=True)
+    thread.start()
+    server_ready.wait()
+
+    auth_url = (
+        "https://www.linkedin.com/oauth/v2/authorization?"
+        + urlencode({
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "scope": scope,
+            "state": state,
+        })
+    )
+
+    click.echo("\nOpening LinkedIn authorization in your browser...")
+    click.echo(f"If the browser doesn't open, visit:\n  {auth_url}\n")
+    webbrowser.open(auth_url)
+
+    click.echo("Waiting for authorization callback (press Ctrl+C to cancel)...")
+    callback_done.wait()
+
+    if result.get("error"):
+        click.echo(f"\nAuthorization failed: {result['error']}", err=True)
         sys.exit(1)
+
+    if result.get("state") != state:
+        click.echo("\nState mismatch — possible CSRF attack. Aborting.", err=True)
+        sys.exit(1)
+
+    code = result.get("code", "")
+    if not code:
+        click.echo("\nNo authorization code received.", err=True)
+        sys.exit(1)
+
+    click.echo("\nExchanging authorization code for access token...")
+
+    import httpx
+
+    try:
+        resp = httpx.post(
+            "https://www.linkedin.com/oauth/v2/accessToken",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        token_data = resp.json()
+    except httpx.HTTPError as exc:
+        click.echo(f"\nToken exchange failed: {exc}", err=True)
+        sys.exit(1)
+
+    access_token = token_data.get("access_token", "")
+    expires_in = token_data.get("expires_in", "unknown")
+
+    click.echo("\n" + "=" * 60)
+    click.echo("LinkedIn access token obtained successfully!")
+    if str(expires_in).isdigit():
+        days = int(expires_in) // 86400
+        click.echo(f"Expires in: {expires_in} seconds (~{days} days)")
+    else:
+        click.echo(f"Expires in: {expires_in}")
+    click.echo("=" * 60)
+    click.echo("\nAdd this to your .env file:\n")
+    click.echo(f"  ASTRA_LINKEDIN__ACCESS_TOKEN={access_token}")
+    click.echo("\nTo post as a company page, also add:")
+    click.echo("  ASTRA_LINKEDIN__ORGANIZATION_ID=<your_org_id>\n")
+    click.echo("(Find your org ID in the LinkedIn company admin panel —")
+    click.echo(" search the page source for 'organizationUrn')\n")
 
 
 # ── version ──────────────────────────────────────────────────────

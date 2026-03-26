@@ -44,8 +44,10 @@ class SocialDistributor:
         excerpt: str,
         url: str,
         post_db_id: int,
+        *,
+        platforms: set[str] | None = None,
     ) -> dict[str, bool]:
-        """Generate platform-specific copy and distribute to all configured platforms.
+        """Generate platform-specific copy and distribute to selected platforms.
 
         Parameters
         ----------
@@ -58,6 +60,10 @@ class SocialDistributor:
         post_db_id:
             The local database primary key of the post record, used to
             update share status.
+        platforms:
+            Optional set of platform names to distribute to (e.g.
+            ``{"linkedin"}``, ``{"twitter", "linkedin"}``).  When ``None``
+            all configured platforms are used.
 
         Returns
         -------
@@ -69,20 +75,24 @@ class SocialDistributor:
             title=title,
             url=url,
             post_db_id=post_db_id,
+            platforms=platforms,
         )
 
         results: dict[str, bool] = {}
         tasks: list[asyncio.Task[bool]] = []
         task_names: list[str] = []
 
-        if self._twitter is not None:
+        include_twitter = platforms is None or "twitter" in platforms
+        include_linkedin = platforms is None or "linkedin" in platforms
+
+        if self._twitter is not None and include_twitter:
             task = asyncio.create_task(
                 self._distribute_twitter(title, excerpt, url, post_db_id),
             )
             tasks.append(task)
             task_names.append("twitter")
 
-        if self._linkedin is not None:
+        if self._linkedin is not None and include_linkedin:
             task = asyncio.create_task(
                 self._distribute_linkedin(title, excerpt, url, post_db_id),
             )

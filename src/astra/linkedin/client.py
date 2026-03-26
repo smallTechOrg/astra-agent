@@ -43,8 +43,17 @@ _retry_transient = retry(
 def _check_response(response: httpx.Response) -> None:
     """Raise typed errors for common HTTP status codes."""
     if response.status_code in (401, 403):
+        body = response.text[:300]
+        hint = ""
+        if "author" in body and "ACCESS_DENIED" in body:
+            hint = (
+                "\n\nHint: To post as an organization page, your LinkedIn app needs the "
+                "'Community Management' product (grants w_organization_social scope).\n"
+                "Add it at linkedin.com/developers/apps → Products, then re-run: "
+                "astra auth linkedin --client-id ... --client-secret ..."
+            )
         raise LinkedInAuthError(
-            f"Authentication failed (HTTP {response.status_code}): {response.text[:200]}"
+            f"Authentication failed (HTTP {response.status_code}): {body}{hint}"
         )
     if response.status_code >= 400:
         raise LinkedInError(
@@ -184,52 +193,37 @@ class LinkedInClient:
         return await self._share_as_person(share)
 
     async def _share_as_organization(self, share: LinkedInShare) -> LinkedInShareResponse:
-        """Post on behalf of an organisation via the UGC Posts API."""
+        """Post on behalf of an organisation via the unified Posts API."""
         author = f"urn:li:organization:{self._organization_id}"
         self._log.info("linkedin.share_org", org=self._organization_id)
 
-        # Build specific content
-        specific_content: dict = {
-            "com.linkedin.ugc.ShareContent": {
-                "shareCommentary": {"text": share.text},
-                "shareMediaCategory": "NONE",
-            },
-        }
-
-        # Attach article media if a URL is provided
-        if share.url:
-            media_entry: dict = {
-                "status": "READY",
-                "originalUrl": share.url,
-            }
-            if share.title:
-                media_entry["title"] = {"text": share.title}
-            if share.description:
-                media_entry["description"] = {"text": share.description}
-
-            specific_content["com.linkedin.ugc.ShareContent"]["shareMediaCategory"] = "ARTICLE"
-            specific_content["com.linkedin.ugc.ShareContent"]["media"] = [media_entry]
-
         payload: dict = {
             "author": author,
-            "lifecycleState": "PUBLISHED",
-            "specificContent": specific_content,
-            "visibility": {
-                "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC",
+            "commentary": share.text,
+            "visibility": "PUBLIC",
+            "distribution": {
+                "feedDistribution": "MAIN_FEED",
+                "targetEntities": [],
+                "thirdPartyDistributionChannels": [],
             },
+            "lifecycleState": "PUBLISHED",
         }
 
+        if share.url:
+            article: dict = {"source": share.url}
+            if share.title:
+                article["title"] = share.title
+            if share.description:
+                article["description"] = share.description
+            payload["content"] = {"article": article}
+
         client = self._ensure_client()
-        response = await client.post("/v2/ugcPosts", json=payload)
+        response = await client.post("/v2/posts", json=payload)
         _check_response(response)
 
-        data = response.json()
-        post_id = data.get("id", "")
-        # The activity URN is returned in the response headers or body
-        activity = response.headers.get("X-RestLi-Id", data.get("id", ""))
-
+        post_id = response.headers.get("X-RestLi-Id", "")
         self._log.info("linkedin.share_org.ok", post_id=post_id)
-        return LinkedInShareResponse(id=str(post_id), activity=str(activity))
+        return LinkedInShareResponse(id=str(post_id), activity=str(post_id))
 
     async def _share_as_person(self, share: LinkedInShare) -> LinkedInShareResponse:
         """Post as a personal profile via the Posts API."""

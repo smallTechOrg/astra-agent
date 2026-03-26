@@ -251,20 +251,43 @@ class AstraEngine:
     async def distribute_post(
         self,
         wp_post_id: int,
+        *,
+        platforms: set[str] | None = None,
     ) -> dict[str, bool]:
         """Distribute an existing WordPress post to social platforms.
 
-        Looks up the post in the local DB and WordPress, then delegates
-        to the ``SocialDistributor``.
+        If the post is not yet tracked in the local database it is
+        automatically fetched from WordPress and registered.
+
+        Parameters
+        ----------
+        wp_post_id:
+            The WordPress post ID.
+        platforms:
+            Optional set of platform names (``"twitter"``, ``"linkedin"``).
+            When ``None`` all configured platforms are used.
         """
-        post_record = await self._db.get_post_by_wp_id(wp_post_id)
-        if post_record is None:
-            raise ValueError(f"No local record for WordPress post {wp_post_id}")
+        from astra.storage.models import PostStatus
 
         wp_post = await self._wp.get_post(wp_post_id)
+
+        post_record = await self._db.get_post_by_wp_id(wp_post_id)
+        if post_record is None:
+            self._log.info(
+                "distribute_post.auto_register",
+                wp_post_id=wp_post_id,
+                title=wp_post.title.rendered,
+            )
+            post_record = await self._db.record_post(
+                title=wp_post.title.rendered,
+                wp_post_id=wp_post_id,
+                status=PostStatus.PUBLISHED,
+            )
+
         return await self._distributor.distribute_post(
             title=post_record.title,
             excerpt=wp_post.title.rendered,
             url=wp_post.link,
             post_db_id=post_record.id,
+            platforms=platforms,
         )

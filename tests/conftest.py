@@ -92,6 +92,7 @@ def sample_config(tmp_path: Path) -> AstraConfig:
         linkedin={"access_token": "li-token", "organization_id": "li-org-123"},
         database_path=str(tmp_path / "test_astra.db"),
         log_level="debug",
+        _env_file=None,
     )
 
 
