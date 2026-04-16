@@ -15,6 +15,9 @@ venv/
 env/
 .envrc
 
+# uv / pip lock files
+uv.lock
+
 # IDE
 .vscode/
 .idea/
