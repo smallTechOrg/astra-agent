@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Edit(**)",
+      "Write(**)",
+      "Glob(**)",
+      "Grep(**)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(pytest*)",
+      "Bash(ruff:*)",
+      "Bash(mypy:*)",
+      "Bash(astra:*)",
+      "Bash(ls *)",
+      "Bash(tree *)",
+      "Bash(find *)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(git blame*)",
+      "Bash(git add *)",
+      "Bash(git commit*)",
+      "Bash(git stash*)",
+      "Bash(git restore *)",
+      "Bash(git checkout *)",
+      "Bash(git switch *)",
+      "Bash(git pull*)",
+      "Bash(gh pr *)",
+      "Bash(gh issue *)",
+      "Bash(gh api *)",
+      "Bash(mkdir *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(sqlite3 state/*)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:docs.x.com)",
+      "WebFetch(domain:developer.wordpress.org)",
+      "WebFetch(domain:learn.microsoft.com)"
+    ],
+    "ask": [
+      "Bash(rm *)",
+      "Bash(rmdir *)",
+      "Bash(pip *)",
+      "Bash(pip3 *)",
+      "Bash(uv *)",
+      "Bash(npm *)",
+      "Bash(docker *)",
+      "Bash(git push*)",
+      "Bash(git reset *)",
+      "Bash(git rebase *)",
+      "Bash(git cherry-pick *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh repo *)"
+    ],
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(config/tenants/**/.env)",
+      "Edit(**/.env)",
+      "Edit(**/.env.*)",
+      "Write(**/.env)",
+      "Write(**/.env.*)",
+      "Write(config/tenants/**/.env)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git commit --no-verify*)",
+      "Bash(git commit -n *)"
+    ]
+  },
+
+  "sandbox": {
+    "autoAllowBashIfSandboxed": true,
+    "autoAllowNetworkIfSandboxed": false,
+    "excludedPaths": [
+      "./.env",
+      "./.env.*",
+      "./config/tenants/**/.env"
+    ],
+    "network": {
+      "allowUnixSockets": [],
+      "allowLocalBinding": true,
+      "allowedDomains": [
+        "api.anthropic.com",
+        "api.openai.com",
+        "api.groq.com",
+        "api.linkedin.com",
+        "api.twitter.com",
+        "api.x.com",
+        "*.wordpress.com",
+        "github.com",
+        "api.github.com",
+        "pypi.org",
+        "files.pythonhosted.org"
+      ]
+    }
+  },
+
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[stop-hook] Before ending: did any behavioural change trace to a spec sentence? If src/ changed without a matching spec/ edit, run /spec-check.'"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[astra] Spec-driven repo. Start with spec/README.md. For multi-file work, /plan first.'"
+          }
+        ]
+      }
+    ]
+  },
+
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "75"
+  },
+
+  "plansDirectory": "./reports",
+
+  "attribution": {
+    "commit": "Co-Authored-By: Claude <noreply@anthropic.com>",
+    "pr": "Generated with [Claude Code](https://claude.ai/code)"
+  },
+
+  "respectGitignore": true
+}

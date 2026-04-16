@@ -13,7 +13,6 @@ build/
 .venv/
 venv/
 env/
-.env
 .envrc
 
 # IDE
@@ -35,6 +34,8 @@ htmlcov/
 
 # Data / runtime
 data/
+state/
+reports/
 *.db
 *.sqlite
 *.sqlite3
@@ -44,6 +45,12 @@ data/
 logs/
 
 # Secrets — never commit these
-.env.local
-.env.production
+.env
+.env.*
+!.env.example
+config/**/.env
+config/**/.env.*
 credentials.json
+
+# Personal Claude Code overrides
+.claude/settings.local.json
