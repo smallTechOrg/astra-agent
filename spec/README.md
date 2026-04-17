@@ -28,7 +28,8 @@ Rules that govern how code gets written. Every rule applies everywhere unless it
 - [`engineering/spec-driven.md`](engineering/spec-driven.md) — the rule (spec first, code second)
 - [`engineering/tenant-isolation.md`](engineering/tenant-isolation.md) — patterns that maintain the guarantees in [`product/03-tenancy.md`](product/03-tenancy.md)
 - [`engineering/secret-hygiene.md`](engineering/secret-hygiene.md) — how secrets enter, travel, and exit the system
-- [`engineering/code-style.md`](engineering/code-style.md) — canonical libraries and structural conventions
+- [`engineering/tech-stack.md`](engineering/tech-stack.md) — language choice, runtime pin, canonical libraries
+- [`engineering/code-style.md`](engineering/code-style.md) — structural conventions and patterns
 - [`engineering/commits.md`](engineering/commits.md) — commit and PR hygiene
 
 Workflows — repeatable procedures invoked by Claude Code commands/agents and Copilot prompts. Change the workflow here; tool-specific files are thin pointers.
