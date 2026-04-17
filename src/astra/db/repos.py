@@ -287,6 +287,13 @@ class PublishEventsRepo:
         )
         return _row_to_publish_event(row) if row else None
 
+    async def get_by_id(self, publish_event_id: int) -> PublishEventRecord | None:
+        row = await self._db.fetch_one(
+            "SELECT * FROM publish_events WHERE id = ?",
+            (publish_event_id,),
+        )
+        return _row_to_publish_event(row) if row else None
+
     async def list_recent(
         self, tenant_id: str, limit: int = 20
     ) -> list[PublishEventRecord]:
