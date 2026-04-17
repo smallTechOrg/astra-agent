@@ -6,7 +6,7 @@ Astra is a small-to-medium Python async codebase. Keep it that way.
 
 ## Language baseline
 
-- **Python 3.11+**. Use modern syntax: `X | None` over `Optional[X]`, `list[X]` over `List[X]`, structural pattern matching where it genuinely clarifies.
+- **Python 3.12** (pinned in `.tool-versions`). `requires-python = ">=3.12"` in `pyproject.toml`. Use modern syntax: `X | None` over `Optional[X]`, `list[X]` over `List[X]`, structural pattern matching where it genuinely clarifies.
 - **Async by default**. Every I/O-bound function is `async def`. Blocking calls are confined to narrow, documented spots (e.g. `webbrowser.open()` in the OAuth CLI helper).
 - **Type hints everywhere** on function signatures. Internal variables usually don't need hints unless inference is ambiguous.
 
