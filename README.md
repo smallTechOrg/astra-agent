@@ -8,7 +8,7 @@ One process, many tenants. One tenant failing never affects another.
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.12 (see `.tool-versions`)
 - A WordPress site with the REST API enabled and an [Application Password](https://make.wordpress.org/core/2020/11/05/application-passwords-integration-guide/) created
 - LinkedIn: an organization page + an OAuth 2.0 access token with `w_member_social` scope
 - Twitter/X: API v2 credentials (API key, API secret, access token, access secret) with write permission

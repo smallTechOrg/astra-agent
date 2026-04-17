@@ -23,7 +23,16 @@ Alternatives considered: Go (better binary distribution, worse LLM/HTTP ecosyste
 
 **Python 3.12.5**, pinned in [`.tool-versions`](../../.tool-versions) (managed by [asdf](https://asdf-vm.com/)).
 
-`.tool-versions` is the single source of truth for the runtime version. `pyproject.toml` (`requires-python`) and mypy (`python_version`) must match it. If you change the pin, change all three.
+`.tool-versions` is the single source of truth for the runtime version. When the pin changes, update all of the following — nothing else:
+
+| File | Field |
+|---|---|
+| `.tool-versions` | `python X.Y.Z` — **the pin** |
+| `pyproject.toml` | `requires-python = ">=X.Y"` |
+| `pyproject.toml` | `[tool.ruff] target-version = "pyXY"` |
+| `pyproject.toml` | `[tool.mypy] python_version = "X.Y"` |
+
+No other file should state a Python version. `README.md` and any other prose must reference `.tool-versions` rather than repeat the number.
 
 ---
 
