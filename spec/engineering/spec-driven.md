@@ -35,6 +35,14 @@ The [`../product/`](../product/) tree is the source of truth for what Astra does
 - **"I'll spec it later."** No. The spec change is part of the same commit, or a prior commit, not a later one.
 - **Making small "obvious" changes without spec updates.** Behavioral changes are never obvious to the next reader. If the change is genuinely spec-neutral (refactor, rename, internal cleanup), no spec update is needed — but verify this is the case before skipping the spec step.
 
+## README
+
+`README.md` is the public entry point to the repo. It must stay accurate.
+
+Any change that affects **install steps, config layout, CLI commands, quick-start workflow, or architectural assumptions described in `README.md`** requires a README update in the same PR. Treat a stale README the same as a stale spec — it is a bug.
+
+The README is *not* a spec. It summarises the specs for newcomers. When in doubt, keep it short and link to the canonical spec file.
+
 ## Exceptions
 
 The only changes that don't require spec updates:

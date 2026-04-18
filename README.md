@@ -9,6 +9,7 @@ One process, many tenants. One tenant failing never affects another.
 ## Requirements
 
 - Python 3.12 (see `.tool-versions`)
+- PostgreSQL 14+ (all state lives here — no SQLite, no local files for tenant config)
 - A WordPress site with the REST API enabled and an [Application Password](https://make.wordpress.org/core/2020/11/05/application-passwords-integration-guide/) created
 - LinkedIn: an organization page + an OAuth 2.0 access token with `w_member_social` scope
 - Twitter/X: API v2 credentials (API key, API secret, access token, access secret) with write permission
@@ -19,7 +20,7 @@ One process, many tenants. One tenant failing never affects another.
 ## Install
 
 ```bash
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 Verify:
@@ -35,7 +36,7 @@ astra --version
 ### 1. Create the config directory
 
 ```bash
-mkdir -p config prompts
+mkdir -p config
 ```
 
 ### 2. Write `config/operator.yaml`
@@ -48,109 +49,48 @@ llm:
   max_tokens: 1024
   temperature: 0.8
 
-database_path: state/astra.db
 log_level: info
+
+daemon:
+  share_sweep_cron: "*/10 * * * *"
+  startup_grace_seconds: 5
 ```
 
 ### 3. Write `config/.env` (gitignored)
 
 ```
+DATABASE_URL=postgresql://astra:astra@localhost:5432/astra
 LLM_API_KEY=your-api-key-here
+ASTRA_UI_PASSWORD=your-ui-password        # required if astra ui binds non-loopback
 ```
 
-### 4. Add a tenant
+### 4. Start PostgreSQL and create the database
+
+```bash
+createuser astra --pwprompt        # enter password "astra" (or your choice)
+createdb astra -O astra
+```
+
+Astra runs migrations automatically on first startup — no manual schema setup needed.
+
+### 5. Add a tenant
 
 ```bash
 astra tenant add acme-corp --name "Acme Corporation"
 ```
 
-This creates `config/tenants/acme-corp/tenant.yaml` (with `enabled: false`) and an empty `.env`.
+This creates a row in the `tenants` table with `enabled: false` and an empty `tenant_config` row. All tenant configuration is stored in the PostgreSQL database — there are no per-tenant config files.
 
-Edit `config/tenants/acme-corp/tenant.yaml`:
+Configure the tenant via the **UI wizard** (`astra ui`) or directly via the CLI and DB. See [`spec/product/06-cli.md`](spec/product/06-cli.md) for the full CLI reference.
 
-```yaml
-id: acme-corp
-name: "Acme Corporation"
-enabled: true
+### 6. Set tenant secrets
 
-source:
-  type: wordpress
-  url: "https://blog.acme.com"
-  username: "admin"
-  app_password_env: WP_APP_PASSWORD
-  poll_cron: "*/5 * * * *"
-
-destinations:
-  linkedin:
-    enabled: true
-    organization_id: "12345678"
-    access_token_env: LINKEDIN_ACCESS_TOKEN
-    prompt: linkedin_announcement
-
-  twitter:
-    enabled: true
-    api_key_env: TWITTER_API_KEY
-    api_secret_env: TWITTER_API_SECRET
-    access_token_env: TWITTER_ACCESS_TOKEN
-    access_secret_env: TWITTER_ACCESS_SECRET
-    announcement_prompt: twitter_announcement
-
-cadences:
-  - name: daily-tips
-    cron: "0 14 * * *"
-    prompt: twitter_cadence_daily_tips
-    feedback_last_n: 20
-    enabled: true
+```bash
+# Secrets are stored in the tenant_secrets table, never on the filesystem.
+# Use the UI wizard or set them via the API.
 ```
 
-Edit `config/tenants/acme-corp/.env`:
-
-```
-WP_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
-LINKEDIN_ACCESS_TOKEN=AQUz...
-TWITTER_API_KEY=...
-TWITTER_API_SECRET=...
-TWITTER_ACCESS_TOKEN=...
-TWITTER_ACCESS_SECRET=...
-```
-
-### 5. Write prompt files
-
-Astra looks in `prompts/` for operator-wide defaults, and in `config/tenants/<id>/prompts/` for per-tenant overrides.
-
-`prompts/linkedin_announcement.txt`:
-```
-Write a LinkedIn post for a {{tenant_name}} blog article.
-
-Title: {{title}}
-URL: {{url}}
-Excerpt: {{excerpt}}
-
-Keep it under 250 words. Professional tone. End with the article URL.
-```
-
-`prompts/twitter_announcement.txt`:
-```
-Write a tweet announcing a new {{tenant_name}} blog post.
-
-Title: {{title}}
-URL: {{url}}
-
-Under 280 characters including the URL. Engaging and concise.
-```
-
-`prompts/twitter_cadence_daily-tips.txt`:
-```
-Write a standalone tip tweet for {{tenant_name}}.
-
-Recent tweets (avoid repeating): {{recent_tweets}}
-
-Topic: share a practical tip relevant to the brand. Under 280 characters.
-```
-
-Available template variables: `{{tenant_name}}`, `{{title}}`, `{{url}}`, `{{excerpt}}`, `{{recent_tweets}}`.
-
-### 6. Check health
+### 7. Check health
 
 ```bash
 astra health
@@ -170,13 +110,31 @@ Tenant: acme-corp
 
 Fix any `FAILED` lines before proceeding.
 
-### 7. Run the daemon
+### 8. Run the daemon
 
 ```bash
 astra run
 ```
 
 The daemon polls WordPress on the configured cron, distributes new posts to LinkedIn and Twitter, and fires cadence ticks on schedule. Stop with `Ctrl+C`.
+
+### 9. Start the UI (optional)
+
+```bash
+astra ui
+```
+
+Opens the operator web dashboard at `http://127.0.0.1:8080`. The UI provides tenant onboarding, health monitoring, prompt editing, and manual distribution — all backed by the same PostgreSQL database the daemon uses.
+
+---
+
+## Prompts
+
+Prompts are stored in the `prompts` table in the database — not on the filesystem. Two operator defaults (`linkedin_announcement`, `twitter_announcement`) are seeded by the first migration.
+
+Prompts use `{placeholder}` substitution. An optional `# variables:` header declares expected placeholders; a `---` separator splits system and user parts.
+
+Edit prompts via the UI prompt editor or the API. Tenant-specific overrides take precedence over operator defaults. See [`spec/product/08-prompts.md`](spec/product/08-prompts.md).
 
 ---
 
@@ -188,7 +146,7 @@ LinkedIn access tokens require an OAuth 2.0 flow. Astra has a built-in helper:
 astra auth linkedin --tenant acme-corp --client-id <id> --client-secret <secret>
 ```
 
-This opens a browser URL, starts a local callback server on port 8989, exchanges the code for a token, and writes it to the tenant's `.env` automatically.
+This opens a browser URL, starts a local callback server on port 8989, exchanges the code for a token, and writes it to `tenant_secrets` automatically.
 
 ---
 
@@ -228,18 +186,11 @@ astra tweets --tenant acme-corp --cadence daily-tips
 
 ```
 config/
-├── operator.yaml
-├── .env                          # gitignored — LLM key, etc.
-└── tenants/
-    └── <tenant-id>/
-        ├── tenant.yaml
-        ├── .env                  # gitignored — per-tenant secrets
-        └── prompts/              # optional per-tenant prompt overrides
-
-prompts/                          # operator-wide prompt defaults
-state/
-└── astra.db                      # SQLite — created on first run
+├── operator.yaml                 # Operator-wide settings
+└── .env                          # Gitignored — DATABASE_URL, LLM key, UI password
 ```
+
+All tenant config, secrets, cadences, and prompts are in the PostgreSQL database. There are no per-tenant filesystem artifacts.
 
 ---
 
@@ -258,10 +209,10 @@ state/
 
 ```bash
 astra tenant list                        # show all tenants with status
-astra tenant add <id> [--name "Name"]    # scaffold new tenant
+astra tenant add <id> [--name "Name"]    # create tenant in DB
 astra tenant enable <id>                 # set enabled: true (restart daemon to apply)
 astra tenant disable <id>                # set enabled: false
-astra tenant remove <id> [--force]       # delete config dir + all DB rows
+astra tenant remove <id> [--force]       # delete all DB rows for this tenant
 ```
 
 ---
@@ -271,7 +222,12 @@ astra tenant remove <id> [--force]       # delete config dir + all DB rows
 | Topic | File |
 |---|---|
 | Product vision | [`spec/product/01-vision.md`](spec/product/01-vision.md) |
+| Architecture | [`spec/product/02-architecture.md`](spec/product/02-architecture.md) |
+| Tenancy model | [`spec/product/03-tenancy.md`](spec/product/03-tenancy.md) |
 | Configuration reference | [`spec/product/05-config.md`](spec/product/05-config.md) |
 | Full CLI reference | [`spec/product/06-cli.md`](spec/product/06-cli.md) |
+| Data model (PostgreSQL) | [`spec/product/07-data-model.md`](spec/product/07-data-model.md) |
+| Prompts | [`spec/product/08-prompts.md`](spec/product/08-prompts.md) |
+| UI dashboard | [`spec/product/10-ui-dashboard.md`](spec/product/10-ui-dashboard.md) |
 | Capabilities | [`spec/product/04-capabilities/`](spec/product/04-capabilities/) |
 | Engineering rules | [`spec/engineering/`](spec/engineering/) |
