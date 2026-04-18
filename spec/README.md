@@ -17,9 +17,10 @@ First pass, in order:
 4. [`product/04-capabilities/`](product/04-capabilities/) — one file per behaviour, uniform template (below)
 5. [`product/05-config.md`](product/05-config.md) — config schema and secrets
 6. [`product/06-cli.md`](product/06-cli.md) — command surface
-7. [`product/07-data-model.md`](product/07-data-model.md) — SQLite schema
+7. [`product/07-data-model.md`](product/07-data-model.md) — PostgreSQL schema
 8. [`product/08-prompts.md`](product/08-prompts.md) — LLM prompt contracts
 9. [`product/09-extensibility.md`](product/09-extensibility.md) — how to add platforms, sources, cadences
+10. [`product/10-ui-dashboard.md`](product/10-ui-dashboard.md) — operator web UI
 
 ## Engineering (`engineering/`)
 

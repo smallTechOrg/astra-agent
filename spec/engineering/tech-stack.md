@@ -6,14 +6,17 @@ This document records *what* the stack is and *why*. Coding conventions that use
 
 ---
 
-## Language: Python
+## Language: Python (backend) + TypeScript (UI)
 
-Astra is implemented in Python. Reasons:
+Astra's backend is implemented in Python. The operator UI is implemented in TypeScript with Next.js, compiled at release time and served as a static export by the Python backend. Operators do not need Node.js installed at runtime.
 
-- The async I/O ecosystem (`asyncio`, `httpx`, `aiosqlite`) covers all of Astra's I/O patterns without threading complexity.
+Python rationale:
+
+- The async I/O ecosystem (`asyncio`, `httpx`, `asyncpg`) covers all of Astra's I/O patterns without threading complexity.
 - Pydantic v2 gives first-class config validation and secret handling with minimal boilerplate.
 - The operator audience (small teams running their own instance) is most likely to read, debug, and extend Python.
-- No compiled build step — `pip install -e .` and run.
+
+Backend install: `pip install -e .` and run. Frontend is pre-built in CI; the built `out/` directory ships inside the Python package.
 
 Alternatives considered: Go (better binary distribution, worse LLM/HTTP ecosystem at this scale), Node (strong async, weaker typing story for config validation). Neither offered a meaningful advantage for this use case.
 
@@ -40,10 +43,13 @@ No other file should state a Python version. `README.md` and any other prose mus
 
 Do **not** introduce alternatives without a spec change. Every dependency is a future maintenance cost.
 
+### Backend (Python)
+
 | Purpose | Library | Why this one |
 |---|---|---|
 | HTTP client | `httpx.AsyncClient` | Async-native, clean API, `respx` test support. Not `aiohttp` (worse ergonomics), not `requests` (sync). |
-| Database | `aiosqlite` | Async SQLite with no ORM overhead. Not `sqlite3` (sync), not SQLAlchemy (too heavy for one schema). |
+| Database | `asyncpg` | Async PostgreSQL driver with no ORM overhead. Not `aiosqlite` (SQLite, replaced by PostgreSQL). |
+| Web framework | `FastAPI` | Serves the operator UI API and static Next.js export under `astra ui`. Async-native; integrates cleanly with `asyncpg`. |
 | Config / models | `pydantic` v2, `pydantic-settings` | Best-in-class validation; `SecretStr` prevents secret leakage. |
 | Structured logging | `structlog` | Context binding (`log.bind(tenant_id=...)`) is the right primitive for multi-tenant logging. |
 | Retry / backoff | `tenacity` | Declarative `@retry` with `wait_exponential` and `stop_after_attempt`. |
@@ -53,3 +59,15 @@ Do **not** introduce alternatives without a spec change. Every dependency is a f
 | Testing | `pytest`, `pytest-asyncio`, `respx` | `respx` intercepts `httpx` at the transport layer — no real HTTP in tests. |
 | Lint | `ruff` | Replaces flake8 + isort + pyupgrade; fast; zero-config for this project's rules. |
 | Type check | `mypy` (`strict = true`) | Catches real bugs; `strict` mode prevents gradual type erosion. |
+
+### Frontend (TypeScript — build-time only, not operator runtime)
+
+| Purpose | Library | Why this one |
+|---|---|---|
+| Framework | Next.js 15 (static export) | `output: export` produces a plain `out/` directory served by FastAPI's `StaticFiles`. No Node.js at runtime. |
+| UI library | React 19 | Required by Next.js 15. |
+| Language | TypeScript 5 (strict) | Type safety across components and API contracts. |
+| CSS | Tailwind CSS 4 + PostCSS | Utility-first; no separate CSS build step beyond PostCSS (bundled in Next.js). |
+| Linting | ESLint 9 (`next/core-web-vitals`, `next/typescript`) | Standard Next.js preset. |
+| Package manager | npm | Matches the reference boilerplate. |
+| Dev bundler | Turbopack | Fast HMR in development; production build uses standard Next.js compiler. |

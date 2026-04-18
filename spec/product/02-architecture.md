@@ -5,9 +5,30 @@
 ## Component diagram
 
 ```
+  Operator surfaces
+  ─────────────────────────────────────────────────────────
+  ┌──────────────────────┐    ┌──────────────────────────┐
+  │   astra run          │    │   astra ui               │
+  │   (AstraDaemon)      │    │   (FastAPI + Next.js UI) │
+  │   one process,       │    │   one process,           │
+  │   schedules N tenants│    │   serves operator UI     │
+  └──────────┬───────────┘    └────────────┬─────────────┘
+             │                             │
+             └──────────────┬──────────────┘
+                            │  reads/writes
+                  ┌─────────▼──────────────────────────────┐
+                  │            PostgreSQL DB               │
+                  │  tenants · tenant_config               │
+                  │  tenant_secrets · cadences             │
+                  │  source_state · destination_state      │
+                  │  publish_events · distribution_records │
+                  │  scheduled_tweets                      │
+                  └────────────────────────────────────────┘
+
+  AstraDaemon internals
+  ─────────────────────────────────────────────────────────
                   ┌──────────────────────────────────────────────┐
                   │                  AstraDaemon                 │
-                  │   (one process, schedules N tenants)         │
                   └──────────────────────────────────────────────┘
                                         │
               ┌─────────────────────────┼─────────────────────────┐
@@ -30,13 +51,16 @@
     │LinkedIn│ │Twitter│ │(future)     │     │Twitter    │
     │Dest    │ │Dest   │ │  Mastodon…  │     │Dest       │
     └────────┘ └───────┘ └─────────────┘     └───────────┘
-
-                  ┌──────────────────────────────────────────────┐
-                  │                  SQLite DB                   │
-                  │ tenants · source_state · publish_events      │
-                  │ distribution_records · scheduled_tweets      │
-                  └──────────────────────────────────────────────┘
 ```
+
+## Operator surfaces
+
+Astra has two operator-facing surfaces, both thin wrappers over the same PostgreSQL database and domain layer:
+
+- **CLI** (`astra <command>`) — scriptable, composable, complete. See [`06-cli.md`](06-cli.md).
+- **UI** (`astra ui`) — guided web interface for onboarding, monitoring, and manual actions. See [`10-ui-dashboard.md`](10-ui-dashboard.md).
+
+Both surfaces are first-class. Neither is a subset of the other: the CLI is better for automation and scripting; the UI is better for initial setup and day-to-day monitoring.
 
 ## Layers and abstractions
 
@@ -89,18 +113,18 @@ Numbered to make this mechanically verifiable:
 
 | Boundary | Trusted? | Notes |
 |---|---|---|
-| Operator-written config YAML | Yes | Assumed not adversarial. |
-| Tenant-provided credentials | Yes, from operator POV | Stored in per-tenant `.env`, never in YAML. |
+| Operator-written config YAML | Yes | `operator.yaml` is assumed not adversarial. |
+| Tenant-provided credentials | Yes, from operator POV | Stored in `tenant_secrets` table; never in YAML. |
+| UI HTTP requests | Yes (authenticated) | UI binds loopback by default; all state-changing endpoints require the operator session. |
 | WordPress REST API responses | No | Validated against response models before use. Untrusted HTML is never executed. |
 | LinkedIn / Twitter API responses | No | Validated; errors mapped to typed failures. |
 | LLM output | No | Length-checked, truncated if needed, never executed. |
 
 ## Process model
 
-- Single async Python process (`astra run`).
-- One shared `asyncio` event loop.
-- Scheduler: APScheduler's `AsyncIOScheduler`.
-- Persistence: one SQLite file at `state/astra.db`, accessed via `aiosqlite`. Serialized writes; concurrent reads fine.
+- **Daemon** (`astra run`): single async Python process. One shared `asyncio` event loop. Scheduler: APScheduler's `AsyncIOScheduler`.
+- **UI server** (`astra ui`): separate async Python process running FastAPI. Serves the pre-built Next.js static export and a JSON API over the same PostgreSQL database.
+- **Persistence**: PostgreSQL, accessed via `asyncpg`. Both processes connect to the same DB. Daemon writes tenant state; UI reads state and writes tenant config/secrets.
 - Concurrency across tenants is achieved by cooperative async scheduling, not threads. A slow WP site for tenant A yields to other tenants' jobs.
 
 ## What lives where in code (contractually)

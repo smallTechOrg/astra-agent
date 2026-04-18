@@ -25,7 +25,7 @@ Astra does **not**:
 
 ## Audiences
 
-**Operator** (the person running Astra): wants to onboard a tenant in minutes, trust that distribution keeps running without babysitting, and see clear signals when something breaks.
+**Operator** (the person running Astra): wants to onboard a tenant in minutes via either the CLI or the guided web UI, trust that distribution keeps running without babysitting, and see clear signals when something breaks.
 
 **Tenant** (the brand whose content is being distributed): never interacts with Astra directly. Experiences Astra only through the posts that appear on their LinkedIn and Twitter on time.
 
@@ -37,7 +37,7 @@ Astra is working correctly when:
 2. A tenant's configured cadence → tweets appear on schedule, on topic, and don't repeat recent content.
 3. One tenant's expired LinkedIn token does not prevent another tenant's distribution.
 4. Restarting the daemon mid-run does not cause duplicate posts or lost events.
-5. A new tenant can be onboarded end-to-end by writing one YAML file and one `.env` file, no code changes.
+5. A new tenant can be onboarded end-to-end via the UI wizard or a handful of CLI commands, with no code changes and no file editing.
 
 ## Out of scope: engagement
 

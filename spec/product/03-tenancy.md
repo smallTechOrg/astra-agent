@@ -13,7 +13,7 @@ A **tenant** is the unit of multi-tenancy in Astra. One tenant represents one br
 - zero or one **Twitter destination** (an X/Twitter account)
 - zero or more **cadence configurations** (independently scheduled Twitter posting jobs)
 - its own **state** in the database (all rows scoped by `tenant_id`)
-- its own **secrets** (all stored in `config/tenants/<id>/.env`, gitignored)
+- its own **secrets** (all stored in the `tenant_secrets` DB table, scoped by `tenant_id`)
 - its own **prompt overrides** (optional, in `config/tenants/<id>/prompts/`)
 
 A tenant can be `enabled: true` or `enabled: false`. Disabled tenants are loaded into memory but no jobs run for them.
@@ -21,26 +21,25 @@ A tenant can be `enabled: true` or `enabled: false`. Disabled tenants are loaded
 ## Tenant lifecycle
 
 ### Create
-- `astra tenant add <id> --name "Display Name"` creates `config/tenants/<id>/tenant.yaml` with a commented template and an empty `.env`.
+- `astra tenant add <id> --name "Display Name"` inserts a `tenants` row and an empty `tenant_config` row. Or use the UI onboarding wizard.
 - The tenant starts `enabled: false` until the operator fills in credentials and enables it.
 
 ### Configure
-- Operator edits `config/tenants/<id>/tenant.yaml` to point at the WordPress URL, LinkedIn org ID, Twitter API keys, and defines cadences.
-- Operator fills secrets in `config/tenants/<id>/.env`.
-- Operator runs `astra auth linkedin --tenant <id>` if a fresh LinkedIn token is needed.
+- Operator fills in source URL, destination credentials, and cadences via the UI wizard or via `astra tenant add` followed by direct DB writes (advanced).
+- Operator runs `astra auth linkedin --tenant <id>` (CLI) or completes the LinkedIn OAuth step in the UI wizard to store the access token.
+- Secrets are written to `tenant_secrets`; config to `tenant_config` and `cadences`.
 
 ### Enable
-- Set `enabled: true` in `tenant.yaml`.
-- Next daemon reload picks up the tenant and starts its polling + cadence jobs.
-- `astra tenant enable <id>` / `disable <id>` are equivalent CLI shortcuts.
+- Set `tenants.enabled = true` via `astra tenant enable <id>` or the UI toggle.
+- Next daemon restart picks up the tenant and starts its polling + cadence jobs.
 
 ### Disable
-- `enabled: false` stops all scheduled jobs for this tenant.
+- `tenants.enabled = false` stops all scheduled jobs for this tenant on next daemon restart.
 - Existing state (publish events, distribution records) is preserved.
 - Re-enabling resumes from where it left off; posts published during the disabled window are not backfilled unless the operator manually triggers `astra distribute`.
 
 ### Remove
-- `astra tenant remove <id>` deletes the YAML and `.env` files and deletes all DB rows scoped to that `tenant_id`. This is destructive and requires a confirmation prompt.
+- `astra tenant remove <id>` or the UI delete action cascades-deletes all DB rows scoped to that `tenant_id`. This is destructive and requires a confirmation prompt.
 
 ## Isolation guarantees
 
@@ -50,23 +49,23 @@ These are the contractual properties tenants observe. The engineering patterns A
 2. **Error isolation.** An exception raised while processing tenant A never prevents tenant B's scheduled jobs from running.
 3. **Rate-limit isolation.** A 429 from Twitter for tenant A does not cause Astra to back off calls for tenant B. Rate-limit state is tenant-scoped.
 4. **Credential isolation.** Tenant A's credentials are never used for tenant B's API calls.
-5. **Secret isolation.** A tenant's `.env` is only read by that tenant's runner. Env vars are not globally shared into the process except for operator-level keys.
+5. **Secret isolation.** `tenant_secrets` rows for tenant A are never read in the context of tenant B. Every secret lookup is parameterized by `tenant_id`.
 
 ## Secrets
 
 ### Where secrets live
-- **Never** in `tenant.yaml` (YAML is considered operator-readable and could be checked in).
-- **Always** in `config/tenants/<id>/.env`, which is gitignored.
-- Alternatively: real OS env vars prefixed `ASTRA_TENANT__<UPPER_ID>__…` override the `.env` file.
+- **Always** in the `tenant_secrets` DB table, keyed by `(tenant_id, key)`.
+- **Never** in `operator.yaml` or any YAML file.
+- Operator-level secrets (`LLM_API_KEY`, `DATABASE_URL`, `ASTRA_UI_PASSWORD`) live in `config/.env` and are never in the DB.
 
 ### Which values are secrets
-- WordPress application password
-- LinkedIn access token
-- Twitter API key / API secret / access token / access secret / bearer token
+- WordPress application password (`WP_APP_PASSWORD`)
+- LinkedIn access token (`LINKEDIN_ACCESS_TOKEN`)
+- Twitter API key / API secret / access token / access secret
 
 ### Operator-level keys
-- `LLM_API_KEY` — shared by default, per-tenant override allowed. Lives in root `.env`.
-- Per-tenant LLM override: set `llm.api_key_env` in `tenant.yaml` pointing at a different env var.
+- `LLM_API_KEY` — shared by default. Per-tenant override: set `llm_provider`/`llm_model` in `tenant_config` and store the key in `tenant_secrets` under a distinct key name.
+- `DATABASE_URL` — PostgreSQL connection string. Operator-level only.
 
 ## Failure isolation in practice
 
@@ -87,7 +86,7 @@ A single tenant's misconfiguration never prevents the daemon from starting or ot
 LinkedIn tokens expire (~60 days for member tokens). Astra does not attempt automatic refresh:
 
 - On any LinkedIn API `401`, mark tenant `linkedin.needs_reauth = true` in `source_state` (or equivalent).
-- Subsequent LinkedIn distribution attempts for that tenant are skipped with reason `needs_reauth` until the operator runs `astra auth linkedin --tenant <id>` and updates the `.env`.
+- Subsequent LinkedIn distribution attempts for that tenant are skipped with reason `needs_reauth` until the operator runs `astra auth linkedin --tenant <id>` (CLI) or re-authenticates via the UI, which updates `tenant_secrets.LINKEDIN_ACCESS_TOKEN`.
 - `astra health` and `astra tenant list` both surface this state.
 
 ## Naming

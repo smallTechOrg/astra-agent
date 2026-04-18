@@ -2,41 +2,26 @@
 
 **Status:** DRAFT
 
+## Overview
+
+Astra uses a two-tier config model:
+
+- **Operator-level** — settings and secrets that apply to the whole installation. Lives in `config/operator.yaml` and `config/.env` on the filesystem.
+- **Tenant-level** — settings and secrets for each individual tenant. Lives entirely in the PostgreSQL database (`tenant_config`, `tenant_secrets`, `cadences` tables). Managed via the CLI or UI — no files to edit.
+
+There are no per-tenant YAML or `.env` files. Everything about a tenant is in the DB.
+
 ## File layout
 
 ```
 config/
-├── operator.yaml              # Operator-wide settings (LLM, log level, db path)
-├── .env                       # Operator-wide secrets (LLM_API_KEY, etc.)  [gitignored]
-└── tenants/
-    └── <tenant-id>/
-        ├── tenant.yaml        # Per-tenant config: source, destinations, cadences
-        ├── .env               # Per-tenant secrets                         [gitignored]
-        └── prompts/           # Optional per-tenant prompt overrides
-            ├── linkedin_announcement.txt
-            ├── twitter_announcement.txt
-            └── twitter_cadence_<name>.txt
-
-prompts/                       # Operator-wide default prompts (fallback)
-├── linkedin_announcement.txt
-├── twitter_announcement.txt
-└── twitter_cadence_<name>.txt
+├── operator.yaml      # Operator-wide settings (LLM provider, log level)
+└── .env               # Operator-wide secrets (DATABASE_URL, LLM_API_KEY, ASTRA_UI_PASSWORD)
 ```
 
-`state/astra.db` is the SQLite file. Not in `config/` because it's derived state, not configuration.
+There are no per-tenant filesystem artifacts. All tenant config, secrets, and prompts are in the DB.
 
-## Precedence
-
-For any value, precedence is (highest wins):
-
-1. OS env var (e.g. `ASTRA_TENANT__ACME__LINKEDIN__ACCESS_TOKEN`)
-2. Per-tenant `.env` file
-3. Operator `.env` file
-4. Per-tenant `tenant.yaml`
-5. Operator `operator.yaml`
-6. Built-in defaults
-
-Secrets (anything named `*_token`, `*_password`, `*_secret`, `*_key`) may only come from env sources (1–3). Putting a secret in YAML is a configuration error and Astra rejects the tenant at load time.
+Prompts are stored in the `prompts` table (see [`07-data-model.md`](07-data-model.md#schema) and [`08-prompts.md`](08-prompts.md)). Operator defaults are seeded on first migration; tenant overrides are created via the UI.
 
 ## `operator.yaml`
 
@@ -50,116 +35,93 @@ llm:
   max_tokens: 2048
   # api_key comes from env: LLM_API_KEY
 
-database_path: "state/astra.db"
 log_level: "info"                 # debug | info | warning | error
 
 daemon:
-  share_sweep_cron: "*/10 * * * *"   # periodic retry of unsent distributions
-  startup_grace_seconds: 5           # delay before first scheduled run after boot
+  share_sweep_cron: "*/10 * * * *"
+  startup_grace_seconds: 5
 ```
 
-## `tenants/<id>/tenant.yaml`
+## `config/.env`
 
-```yaml
-# config/tenants/acme-corp/tenant.yaml
-
-id: acme-corp                      # must match directory name
-name: "Acme Corporation"
-enabled: true
-
-source:
-  type: wordpress
-  url: "https://blog.acme.com"
-  username: "admin"
-  app_password_env: "WP_APP_PASSWORD"
-  poll_cron: "*/5 * * * *"
-
-destinations:
-  linkedin:
-    enabled: true
-    organization_id: "12345678"
-    access_token_env: "LINKEDIN_ACCESS_TOKEN"
-    prompt: "linkedin_announcement"
-
-  twitter:
-    enabled: true
-    api_key_env: "TWITTER_API_KEY"
-    api_secret_env: "TWITTER_API_SECRET"
-    access_token_env: "TWITTER_ACCESS_TOKEN"
-    access_secret_env: "TWITTER_ACCESS_SECRET"
-    announcement_prompt: "twitter_announcement"
-
-cadences:
-  - name: "daily-tech-tips"
-    cron: "0 14 * * *"              # daily 14:00 UTC
-    prompt: "twitter_cadence_daily_tech_tips"
-    feedback_last_n: 20
-    enabled: true
-  - name: "hourly-startup-quote"
-    cron: "15 * * * *"              # every hour at :15
-    prompt: "twitter_cadence_hourly_startup_quote"
-    feedback_last_n: 50
-    enabled: false
-
-# Optional: per-tenant LLM override
-# llm:
-#   api_key_env: "ACME_LLM_API_KEY"
-#   model: "claude-sonnet-4-6"
-```
-
-Env-var names referenced in `tenant.yaml` (e.g. `WP_APP_PASSWORD`) are resolved against the **tenant's own `.env`** first, then OS env. This keeps each tenant's secrets namespaced to their directory — the operator doesn't have to prefix them.
-
-## `tenants/<id>/.env`
-
-Gitignored. One flat file, plain `KEY=value`:
+Operator-level secrets. Gitignored. One flat file, plain `KEY=value`:
 
 ```
-WP_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
-LINKEDIN_ACCESS_TOKEN=AQUz...
-TWITTER_API_KEY=...
-TWITTER_API_SECRET=...
-TWITTER_ACCESS_TOKEN=...
-TWITTER_ACCESS_SECRET=...
+DATABASE_URL=postgresql://astra:astra@localhost:5432/astra
+LLM_API_KEY=...
+ASTRA_UI_PASSWORD=...        # Required if astra ui is bound to non-loopback
 ```
 
-Values with spaces don't need quoting (standard dotenv parsing).
+`DATABASE_URL` is the single point of DB configuration. All processes (`astra run`, `astra ui`, CLI commands) read it from here.
+
+## Tenant configuration (in DB)
+
+Tenant config is stored in `tenant_config` and `cadences` tables. The UI and CLI are the write paths. The daemon reads from the DB at startup (and on future hot-reload when `astra reload` lands).
+
+Equivalent to the old `tenant.yaml`:
+
+| Old YAML key | DB table / column |
+|---|---|
+| `id` | `tenants.id` |
+| `name` | `tenants.name` |
+| `enabled` | `tenants.enabled` |
+| `source.type` | `tenant_config.source_type` |
+| `source.url` | `tenant_config.source_url` |
+| `source.username` | `tenant_config.source_username` |
+| `source.poll_cron` | `tenant_config.source_poll_cron` |
+| `destinations.linkedin.enabled` | `tenant_config.linkedin_enabled` |
+| `destinations.linkedin.organization_id` | `tenant_config.linkedin_org_id` |
+| `destinations.linkedin.prompt` | `tenant_config.linkedin_prompt` |
+| `destinations.twitter.enabled` | `tenant_config.twitter_enabled` |
+| `destinations.twitter.announcement_prompt` | `tenant_config.twitter_announcement_prompt` |
+| `cadences[]` | `cadences` table (one row per cadence) |
+| `llm.*` overrides | `tenant_config.llm_*` columns |
+
+## Tenant secrets (in DB)
+
+Per-tenant secrets are stored in the `tenant_secrets` table as key/value pairs. Stored plaintext.
+
+Known keys:
+
+| Key | Purpose |
+|---|---|
+| `WP_APP_PASSWORD` | WordPress application password |
+| `LINKEDIN_ACCESS_TOKEN` | LinkedIn OAuth2 access token |
+| `TWITTER_API_KEY` | Twitter API key |
+| `TWITTER_API_SECRET` | Twitter API secret |
+| `TWITTER_ACCESS_TOKEN` | Twitter access token |
+| `TWITTER_ACCESS_SECRET` | Twitter access token secret |
+
+The daemon reads secrets for a tenant by querying `tenant_secrets WHERE tenant_id = $1`. Secrets for tenant A are never read in the context of tenant B — see [`../engineering/tenant-isolation.md`](../engineering/tenant-isolation.md).
 
 ## Config validation
 
-At daemon startup, for each tenant:
+At daemon startup, for each enabled tenant:
 
-1. **Schema check**: `tenant.yaml` matches the pydantic model. Unknown keys are a warning, not a fatal error (forward-compat for spec additions).
-2. **ID consistency**: `id` field matches directory name. Mismatch is fatal for this tenant.
-3. **Secret resolution**: every `*_env` pointer resolves to a non-empty value. Missing secrets for an *enabled* destination mark the tenant "degraded"; missing secrets for a *disabled* destination are OK.
-4. **Cadence uniqueness**: no two cadences in the same tenant have the same `name`.
-5. **Cron validity**: all `*_cron` fields parse as valid 5-field cron expressions.
-6. **Source type known**: `source.type` must match a registered source (today: only `wordpress`).
+1. **Config completeness**: `tenant_config` row exists. Missing row marks tenant degraded.
+2. **Secret resolution**: all secrets required by enabled destinations are present and non-empty. Missing secrets for a disabled destination are OK.
+3. **Cadence uniqueness**: enforced by DB `UNIQUE (tenant_id, name)` constraint. Violations at insert time, not at startup.
+4. **Cron validity**: all `*_cron` values parse as valid 5-field cron expressions. Invalid cron marks the tenant degraded.
+5. **Source type known**: `source_type` must match a registered source.
 
-Failures in validation for one tenant log a structured error and mark that tenant degraded. **Other tenants load normally.**
+Failures for one tenant log a structured error and mark that tenant degraded. Other tenants load normally.
 
 ## Reload semantics
 
-- The daemon does not watch config files live. A restart is the only way to pick up changes.
-- Planned future capability: `astra reload` sends SIGHUP, triggers re-read and safe re-registration of jobs. Out of scope for v1 of the rebuild.
-
-## Env var naming for operator override
-
-For one-off overrides without editing files, the full-path env convention is:
-
-```
-ASTRA_TENANT__<UPPER_ID>__<SECTION>__<KEY>
-```
-
-Example: `ASTRA_TENANT__ACME_CORP__DESTINATIONS__LINKEDIN__ENABLED=false` to disable LinkedIn for the `acme-corp` tenant without editing YAML.
-
-Tenant ID dashes become underscores in the env-var path (`acme-corp` → `ACME_CORP`).
+- The daemon reads tenant config from the DB at startup.
+- Planned future capability: `astra reload` triggers re-read from DB without restart. Out of scope for v1.
+- v1: restart `astra run` after any config change to pick it up.
+- The UI shows a "Restart daemon to apply" banner after writes that require a restart.
 
 ## Deleted config surface
 
-These keys existed in the old Astra and are **gone** — referencing them in any YAML is a load-time error:
+These keys existed in the old Astra and are **gone**:
 
-- Anything under `wordpress:` at the root (was global, now per-tenant under `source:`).
-- `twitter_bot.*` — engagement is out of scope.
-- `scheduler.post_cron`, `scheduler.engage_cron` — no longer exists.
-- `pollinations_api_key` — image generation removed.
-- `linkedin.access_token` at root — now per-tenant under `destinations.linkedin`.
+- `config/tenants/<id>/tenant.yaml` — replaced by `tenant_config` table
+- `config/tenants/<id>/.env` — replaced by `tenant_secrets` table
+- `operator.yaml → database_path` — replaced by `DATABASE_URL` in `.env`
+- `wordpress:` at root (was global, now per-tenant in DB)
+- `twitter_bot.*` — engagement is out of scope
+- `scheduler.post_cron`, `scheduler.engage_cron` — no longer exists
+- `pollinations_api_key` — image generation removed
+- `linkedin.access_token` at root — now per-tenant in `tenant_secrets`

@@ -2,7 +2,7 @@
 
 **Status:** DRAFT
 
-The CLI is the **only** operator interface. Every operator intent must map to a command here. If you find yourself editing SQL by hand or writing one-off scripts, the missing behavior is a spec gap.
+The CLI is the **complete** operator interface — every operator intent can be performed here. The UI ([`10-ui-dashboard.md`](10-ui-dashboard.md)) is an additive, guided surface over the same operations. If you find yourself editing SQL by hand or writing one-off scripts, the missing behavior is a spec gap.
 
 ## Global flags
 
@@ -19,7 +19,7 @@ The CLI is the **only** operator interface. Every operator intent must map to a 
 ```
 astra tenant add <id> [--name "Display Name"]
 ```
-Creates `config/tenants/<id>/tenant.yaml` with a template and an empty `.env`. The tenant is created with `enabled: false`. ID is validated against the slug regex. Fails if directory already exists.
+Inserts a row into `tenants` and an empty `tenant_config` row. The tenant is created with `enabled: false`. ID is validated against the slug regex. Fails if the ID already exists in the DB.
 
 ```
 astra tenant list
@@ -41,12 +41,12 @@ Columns:
 astra tenant enable <id>
 astra tenant disable <id>
 ```
-Flip `enabled:` in the tenant's YAML. Requires daemon restart to take effect (warned on stdout).
+Updates `tenants.enabled` in the DB. Requires daemon restart to take effect (warned on stdout).
 
 ```
 astra tenant remove <id> [--force]
 ```
-Deletes the tenant's config directory and all DB rows scoped to that tenant_id. Prompts for confirmation unless `--force` is passed.
+Deletes all DB rows scoped to that `tenant_id` (cascades from `tenants` table). Prompts for confirmation unless `--force` is passed.
 
 ### Manual distribution
 
@@ -106,7 +106,7 @@ Tenant: beta-inc
 ```
 astra auth linkedin --tenant <id> --client-id <id> --client-secret <secret> [--port 8989]
 ```
-Runs LinkedIn OAuth2 flow scoped to the named tenant. On success, writes the token into `config/tenants/<id>/.env` under `LINKEDIN_ACCESS_TOKEN=` (creating or updating). Clears `needs_reauth` for the tenant on next daemon reload.
+Runs LinkedIn OAuth2 flow scoped to the named tenant. Starts a local callback server on `--port` (default 8989), opens the browser for LinkedIn consent, and on success upserts `LINKEDIN_ACCESS_TOKEN` into `tenant_secrets` for that tenant. Clears `destination_state.needs_reauth` for LinkedIn. Requires daemon restart to take effect.
 
 ### Introspection
 
@@ -126,6 +126,18 @@ ID   DETECTED      TITLE                          LINKEDIN       TWITTER
 astra tweets --tenant <id> [--cadence <name>] [--limit N]
 ```
 Lists recent cadence tweets with status.
+
+### UI server
+
+```
+astra ui [--host 127.0.0.1] [--port 8080] [--open]
+```
+Starts the operator web UI. Serves the pre-built Next.js static export (bundled in the Python package) and a FastAPI JSON API on the same port. Behavior:
+
+- Binds to `127.0.0.1:8080` by default (loopback only).
+- `--open` opens the default browser to `http://<host>:<port>` after startup.
+- **Refuses to start** with a non-loopback `--host` unless `ASTRA_UI_PASSWORD` is set in `config/.env`. This prevents accidental open exposure.
+- Does not start or stop `astra run`. The two processes are independent and share the PostgreSQL database.
 
 ### Version
 
@@ -147,5 +159,4 @@ These would be convenient but are **explicitly** not in v1 — if you want them,
 
 - `astra prompt edit` — edit prompts via CLI. Use a text editor on the prompt file directly.
 - `astra tenant rename` — IDs are immutable.
-- Interactive TUI / dashboard.
-- Remote API for managing tenants over HTTP.
+- `astra reload` — hot-reload config without restart. Planned; not yet spec'd.
