@@ -184,7 +184,7 @@ class TwitterDestination(Destination):
         if status == 429:
             reset_at = str(headers.get("x-rate-limit-reset", ""))
             await dest_state_repo.update(
-                tenant.id, "twitter", rate_limit_reset_at=reset_at or None
+                tenant.id, "twitter", last_error=f"rate_limited:reset={reset_at}" if reset_at else "rate_limited",
             )
             await dist_repo.complete(
                 tenant_id=tenant.id,

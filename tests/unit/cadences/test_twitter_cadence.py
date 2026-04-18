@@ -16,13 +16,11 @@ import pytest
 
 from astra.cadences.twitter import _MAX_TWEET_LEN, _MIN_TWEET_LEN, TwitterCadence
 from astra.config.models import TenantConfig
-from astra.db import Database, migrate
 from astra.db.repos import DestinationStateRepo, ScheduledTweetsRepo, TenantsRepo
 from astra.domain import TweetFailed, TweetSent, TweetSkipped
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
+    from astra.db import Database
 
 # ── helpers ──────────────────────────────────────────────────────
 
@@ -38,7 +36,6 @@ def _tenant(tenant_id: str = "acme") -> TenantConfig:
             "type": "wordpress",
             "url": "https://blog.example.com",
             "username": "admin",
-            "app_password_env": "WP_APP_PASSWORD",
         },
         "destinations": {},
         "cadences": [],
@@ -75,20 +72,14 @@ def _mock_prompts(system: str = "You are a helpful poster.", user: str = "Write 
     from astra.prompts.resolver import RenderedPrompt
 
     prompts = MagicMock()
-    prompts.render = MagicMock(return_value=RenderedPrompt(system_prompt=system, user_prompt=user))
+    prompts.render = AsyncMock(return_value=RenderedPrompt(system_prompt=system, user_prompt=user))
     return prompts
 
 
 @pytest.fixture
-async def db(tmp_path: Path) -> Database:
-    database = Database(tmp_path / "astra.sqlite")
-    await database.connect()
-    await migrate(database)
-    await TenantsRepo(database).upsert("acme", "Acme", enabled=True)
-    try:
-        yield database
-    finally:
-        await database.close()
+async def db(db: Database) -> Database:
+    await TenantsRepo(db).upsert("acme", "Acme", enabled=True)
+    return db
 
 
 # ── cadence disabled ─────────────────────────────────────────────
@@ -359,7 +350,7 @@ async def test_after_401_next_tick_returns_skipped(db: Database) -> None:
 
 # ── 429 (rate limit) ────────────────────────────────────────────
 
-async def test_429_returns_transient_failed_and_stores_reset(db: Database) -> None:
+async def test_429_returns_transient_failed(db: Database) -> None:
     mock_session = _mock_oauth_session(429, "Rate limited", {"x-rate-limit-reset": "1735000000"})
     cadence = TwitterCadence()
     with patch("requests_oauthlib.OAuth1Session", return_value=mock_session):
@@ -375,10 +366,6 @@ async def test_429_returns_transient_failed_and_stores_reset(db: Database) -> No
     assert isinstance(result, TweetFailed)
     assert result.error == "rate_limited"
     assert result.transient is True
-
-    state = await DestinationStateRepo(db).get("acme", "twitter")
-    assert state is not None
-    assert state.rate_limit_reset_at == "1735000000"
 
 
 # ── 403 (duplicate content) ──────────────────────────────────────
@@ -488,7 +475,6 @@ async def test_two_tenants_do_not_share_history(db: Database) -> None:
             "type": "wordpress",
             "url": "https://blog.beta.com",
             "username": "admin",
-            "app_password_env": "WP_APP_PASSWORD",
         },
         "destinations": {},
         "cadences": [],

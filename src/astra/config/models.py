@@ -1,22 +1,32 @@
-"""Pydantic models for operator.yaml and tenant.yaml.
+"""Pydantic models for operator.yaml and runtime tenant views.
 
-Each model maps 1:1 to the YAML shape in spec/product/05-config.md. Secrets
-never appear here as values — only as env-var pointers (`*_env` fields).
+Per spec/product/05-config.md: operator.yaml holds operator-level settings;
+tenant config and secrets live in the database (spec/product/07-data-model.md).
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+if TYPE_CHECKING:
+    from astra.db.repos import CadenceRecord
+    from astra.db.repos import TenantConfig as DBTenantConfig
 
 LLMProvider = Literal["openai", "anthropic", "groq", "gemini"]
 SourceType = Literal["wordpress"]
 LogLevel = Literal["debug", "info", "warning", "error"]
 
+_SECRET_KEYS = frozenset(
+    ["WP_APP_PASSWORD", "LINKEDIN_ACCESS_TOKEN",
+     "TWITTER_API_KEY", "TWITTER_API_SECRET",
+     "TWITTER_ACCESS_TOKEN", "TWITTER_ACCESS_SECRET"]
+)
+
 
 class LLMConfig(BaseModel):
-    """Operator-level LLM settings. A tenant may override `api_key_env` and `model`."""
+    """Operator-level LLM settings. Tenants may override model/provider/temperature."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -38,20 +48,18 @@ class OperatorConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
-    database_path: str = "state/astra.db"
     log_level: LogLevel = "info"
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
 
 
 class SourceConfig(BaseModel):
-    """Per-tenant source (today only wordpress)."""
+    """Per-tenant source (today: wordpress only)."""
 
     model_config = ConfigDict(extra="allow")
 
-    type: SourceType
-    url: str
-    username: str
-    app_password_env: str = "WP_APP_PASSWORD"
+    type: SourceType = "wordpress"
+    url: str = ""
+    username: str = ""
     poll_cron: str = "*/5 * * * *"
 
 
@@ -60,7 +68,6 @@ class LinkedInDestinationConfig(BaseModel):
 
     enabled: bool = False
     organization_id: str = ""
-    access_token_env: str = "LINKEDIN_ACCESS_TOKEN"
     prompt: str = "linkedin_announcement"
 
 
@@ -68,10 +75,6 @@ class TwitterDestinationConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     enabled: bool = False
-    api_key_env: str = "TWITTER_API_KEY"
-    api_secret_env: str = "TWITTER_API_SECRET"
-    access_token_env: str = "TWITTER_ACCESS_TOKEN"
-    access_secret_env: str = "TWITTER_ACCESS_SECRET"
     announcement_prompt: str = "twitter_announcement"
 
 
@@ -95,7 +98,6 @@ class CadenceConfig(BaseModel):
 class TenantLLMOverride(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    api_key_env: str | None = None
     model: str | None = None
     provider: LLMProvider | None = None
     temperature: float | None = None
@@ -103,12 +105,14 @@ class TenantLLMOverride(BaseModel):
 
 
 class TenantConfig(BaseModel):
+    """Runtime view of a tenant, constructed from DB records."""
+
     model_config = ConfigDict(extra="allow")
 
     id: str
     name: str
     enabled: bool = False
-    source: SourceConfig
+    source: SourceConfig = Field(default_factory=SourceConfig)
     destinations: DestinationsConfig = Field(default_factory=DestinationsConfig)
     cadences: list[CadenceConfig] = Field(default_factory=list)
     llm: TenantLLMOverride | None = None
@@ -120,3 +124,56 @@ class TenantConfig(BaseModel):
 
         validate_slug(value)
         return value
+
+    @classmethod
+    def from_db(
+        cls,
+        tenant_id: str,
+        tenant_name: str,
+        enabled: bool,
+        db_cfg: DBTenantConfig,
+        cadence_records: list[CadenceRecord],
+    ) -> TenantConfig:
+        source = SourceConfig(
+            type=db_cfg.source_type,
+            url=db_cfg.source_url or "",
+            username=db_cfg.source_username or "",
+            poll_cron=db_cfg.source_poll_cron,
+        )
+        linkedin = LinkedInDestinationConfig(
+            enabled=db_cfg.linkedin_enabled,
+            organization_id=db_cfg.linkedin_org_id or "",
+            prompt=db_cfg.linkedin_prompt,
+        )
+        twitter = TwitterDestinationConfig(
+            enabled=db_cfg.twitter_enabled,
+            announcement_prompt=db_cfg.twitter_announcement_prompt,
+        )
+        cadences = [
+            CadenceConfig(
+                name=c.name,
+                cron=c.cron,
+                prompt=c.prompt,
+                feedback_last_n=c.feedback_last_n,
+                enabled=c.enabled,
+            )
+            for c in cadence_records
+        ]
+        llm_override: TenantLLMOverride | None = None
+        if any([db_cfg.llm_provider, db_cfg.llm_model,
+                db_cfg.llm_temperature, db_cfg.llm_max_tokens]):
+            llm_override = TenantLLMOverride(
+                provider=db_cfg.llm_provider,
+                model=db_cfg.llm_model,
+                temperature=db_cfg.llm_temperature,
+                max_tokens=db_cfg.llm_max_tokens,
+            )
+        return cls(
+            id=tenant_id,
+            name=tenant_name,
+            enabled=enabled,
+            source=source,
+            destinations=DestinationsConfig(linkedin=linkedin, twitter=twitter),
+            cadences=cadences,
+            llm=llm_override,
+        )

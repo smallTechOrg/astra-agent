@@ -14,13 +14,12 @@ import respx
 from httpx import ConnectError, Response
 
 from astra.config.models import TenantConfig
-from astra.db import Database, migrate
-from astra.db.repos import SourceStateRepo
+from astra.db.repos import SourceStateRepo, TenantsRepo
 from astra.sources import WordPressSource, get_source
 from astra.sources.base import Source
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from astra.db import Database
 
 _WP_BASE = "https://blog.example.com"
 _WP_URL = f"{_WP_BASE}/wp-json/wp/v2/posts"
@@ -35,14 +34,14 @@ def _tenant(tenant_id: str = "acme") -> TenantConfig:
             "type": "wordpress",
             "url": _WP_BASE,
             "username": "admin",
-            "app_password_env": "WP_APP_PASSWORD",
         },
         "destinations": {},
         "cadences": [],
     })
 
 
-def _post(post_id: int, date_gmt: str = "2026-01-01T10:00:00Z") -> dict[object, object]:
+def _post(post_id: int, date_gmt: str = "2026-01-01T10:00:00") -> dict[object, object]:
+    """WordPress date_gmt is without timezone suffix: %Y-%m-%dT%H:%M:%S."""
     return {
         "id": post_id,
         "title": {"rendered": f"Post {post_id}"},
@@ -53,17 +52,10 @@ def _post(post_id: int, date_gmt: str = "2026-01-01T10:00:00Z") -> dict[object, 
 
 
 @pytest.fixture
-async def db(tmp_path: Path) -> Database:
-    database = Database(tmp_path / "astra.sqlite")
-    await database.connect()
-    await migrate(database)
-    from astra.db.repos import TenantsRepo
-    await TenantsRepo(database).upsert("acme", "Acme", enabled=True)
-    await TenantsRepo(database).upsert("beta", "Beta", enabled=True)
-    try:
-        yield database
-    finally:
-        await database.close()
+async def db(db: Database) -> Database:
+    await TenantsRepo(db).upsert("acme", "Acme", enabled=True)
+    await TenantsRepo(db).upsert("beta", "Beta", enabled=True)
+    return db
 
 
 # ── Registry ─────────────────────────────────────────────────────
@@ -99,10 +91,12 @@ async def test_poll_inserts_new_events(db: Database) -> None:
 
 @respx.mock
 async def test_poll_advances_last_seen_at(db: Database) -> None:
+    from datetime import UTC, datetime
+
     respx.get(url__startswith=_WP_URL).mock(
         return_value=Response(200, json=[
-            _post(1, "2026-01-01T08:00:00Z"),
-            _post(2, "2026-01-01T09:00:00Z"),
+            _post(1, "2026-01-01T08:00:00"),
+            _post(2, "2026-01-01T09:00:00"),
         ])
     )
     source = WordPressSource()
@@ -110,7 +104,7 @@ async def test_poll_advances_last_seen_at(db: Database) -> None:
 
     state = await SourceStateRepo(db).get("acme", "wordpress")
     assert state is not None
-    assert state.last_seen_at == "2026-01-01T09:00:00Z"
+    assert state.last_seen_at == datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC)
     assert state.last_polled_at is not None
 
 
@@ -197,9 +191,6 @@ async def test_poll_5xx_retries_then_succeeds(db: Database) -> None:
 
 @respx.mock
 async def test_two_tenants_events_are_isolated(db: Database) -> None:
-    from astra.db.repos import TenantsRepo
-    await TenantsRepo(db).upsert("beta", "Beta", enabled=True)
-
     respx.get(url__startswith=_WP_URL).mock(
         return_value=Response(200, json=[_post(1)])
     )

@@ -8,61 +8,289 @@ spec/engineering/tenant-isolation.md.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-import aiosqlite
+import asyncpg
 
 if TYPE_CHECKING:
     from astra.db.connection import Database
 
 
-def utc_now() -> str:
-    """ISO-8601 UTC now with Z suffix (DB's canonical timestamp format)."""
-
-    from datetime import UTC, datetime
-
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
-# ── tenants ─────────────────────────────────────────────────────
+# ── tenants ──────────────────────────────────────────────────────
+
 
 class TenantsRepo:
     def __init__(self, db: Database) -> None:
         self._db = db
 
     async def upsert(self, tenant_id: str, name: str, enabled: bool) -> None:
-        now = utc_now()
-        async for conn in self._db.iter_writes():
-            await conn.execute(
-                """
-                INSERT INTO tenants (id, name, enabled, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    name = excluded.name,
-                    enabled = excluded.enabled,
-                    updated_at = excluded.updated_at
-                """,
-                (tenant_id, name, 1 if enabled else 0, now, now),
-            )
+        now = _now()
+        await self._db.execute(
+            """
+            INSERT INTO tenants (id, name, enabled, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $4)
+            ON CONFLICT (id) DO UPDATE SET
+                name       = EXCLUDED.name,
+                enabled    = EXCLUDED.enabled,
+                updated_at = EXCLUDED.updated_at
+            """,
+            tenant_id, name, enabled, now,
+        )
+
+    async def get(self, tenant_id: str) -> asyncpg.Record | None:
+        return await self._db.fetch_one(
+            "SELECT * FROM tenants WHERE id = $1", tenant_id
+        )
 
     async def delete(self, tenant_id: str) -> None:
-        await self._db.execute("DELETE FROM tenants WHERE id = ?", (tenant_id,))
+        await self._db.execute("DELETE FROM tenants WHERE id = $1", tenant_id)
 
-    async def list_all(self) -> list[aiosqlite.Row]:
+    async def list_all(self) -> list[asyncpg.Record]:
         """Operator-level cross-tenant read. Used only by CLI listings."""
-
         return await self._db.fetch_all("SELECT * FROM tenants ORDER BY id")
 
 
-# ── source_state ────────────────────────────────────────────────
+# ── tenant_config ─────────────────────────────────────────────────
+
+
+@dataclass
+class TenantConfig:
+    tenant_id: str
+    source_type: str
+    source_url: str | None
+    source_username: str | None
+    source_poll_cron: str
+    linkedin_enabled: bool
+    linkedin_org_id: str | None
+    linkedin_prompt: str
+    twitter_enabled: bool
+    twitter_announcement_prompt: str
+    llm_provider: str | None
+    llm_model: str | None
+    llm_temperature: float | None
+    llm_max_tokens: int | None
+    updated_at: datetime
+
+
+class TenantConfigRepo:
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def get(self, tenant_id: str) -> TenantConfig | None:
+        row = await self._db.fetch_one(
+            "SELECT * FROM tenant_config WHERE tenant_id = $1", tenant_id
+        )
+        return _row_to_tenant_config(row) if row else None
+
+    async def upsert(
+        self,
+        tenant_id: str,
+        *,
+        source_type: str = "wordpress",
+        source_url: str | None = None,
+        source_username: str | None = None,
+        source_poll_cron: str = "*/5 * * * *",
+        linkedin_enabled: bool = False,
+        linkedin_org_id: str | None = None,
+        linkedin_prompt: str = "linkedin_announcement",
+        twitter_enabled: bool = False,
+        twitter_announcement_prompt: str = "twitter_announcement",
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
+        llm_temperature: float | None = None,
+        llm_max_tokens: int | None = None,
+    ) -> None:
+        now = _now()
+        await self._db.execute(
+            """
+            INSERT INTO tenant_config (
+                tenant_id, source_type, source_url, source_username,
+                source_poll_cron, linkedin_enabled, linkedin_org_id,
+                linkedin_prompt, twitter_enabled, twitter_announcement_prompt,
+                llm_provider, llm_model, llm_temperature, llm_max_tokens,
+                updated_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+            ON CONFLICT (tenant_id) DO UPDATE SET
+                source_type                 = EXCLUDED.source_type,
+                source_url                  = EXCLUDED.source_url,
+                source_username             = EXCLUDED.source_username,
+                source_poll_cron            = EXCLUDED.source_poll_cron,
+                linkedin_enabled            = EXCLUDED.linkedin_enabled,
+                linkedin_org_id             = EXCLUDED.linkedin_org_id,
+                linkedin_prompt             = EXCLUDED.linkedin_prompt,
+                twitter_enabled             = EXCLUDED.twitter_enabled,
+                twitter_announcement_prompt = EXCLUDED.twitter_announcement_prompt,
+                llm_provider                = EXCLUDED.llm_provider,
+                llm_model                   = EXCLUDED.llm_model,
+                llm_temperature             = EXCLUDED.llm_temperature,
+                llm_max_tokens              = EXCLUDED.llm_max_tokens,
+                updated_at                  = EXCLUDED.updated_at
+            """,
+            tenant_id, source_type, source_url, source_username,
+            source_poll_cron, linkedin_enabled, linkedin_org_id,
+            linkedin_prompt, twitter_enabled, twitter_announcement_prompt,
+            llm_provider, llm_model, llm_temperature, llm_max_tokens, now,
+        )
+
+
+def _row_to_tenant_config(row: asyncpg.Record) -> TenantConfig:
+    return TenantConfig(
+        tenant_id=row["tenant_id"],
+        source_type=row["source_type"],
+        source_url=row["source_url"],
+        source_username=row["source_username"],
+        source_poll_cron=row["source_poll_cron"],
+        linkedin_enabled=row["linkedin_enabled"],
+        linkedin_org_id=row["linkedin_org_id"],
+        linkedin_prompt=row["linkedin_prompt"],
+        twitter_enabled=row["twitter_enabled"],
+        twitter_announcement_prompt=row["twitter_announcement_prompt"],
+        llm_provider=row["llm_provider"],
+        llm_model=row["llm_model"],
+        llm_temperature=row["llm_temperature"],
+        llm_max_tokens=row["llm_max_tokens"],
+        updated_at=row["updated_at"],
+    )
+
+
+# ── tenant_secrets ────────────────────────────────────────────────
+
+
+class TenantSecretsRepo:
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def get(self, tenant_id: str, key: str) -> str | None:
+        row = await self._db.fetch_one(
+            "SELECT value FROM tenant_secrets WHERE tenant_id = $1 AND key = $2",
+            tenant_id, key,
+        )
+        return str(row["value"]) if row else None
+
+    async def set(self, tenant_id: str, key: str, value: str) -> None:
+        now = _now()
+        await self._db.execute(
+            """
+            INSERT INTO tenant_secrets (tenant_id, key, value, updated_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (tenant_id, key) DO UPDATE SET
+                value      = EXCLUDED.value,
+                updated_at = EXCLUDED.updated_at
+            """,
+            tenant_id, key, value, now,
+        )
+
+    async def delete(self, tenant_id: str, key: str) -> None:
+        await self._db.execute(
+            "DELETE FROM tenant_secrets WHERE tenant_id = $1 AND key = $2",
+            tenant_id, key,
+        )
+
+    async def list_keys(self, tenant_id: str) -> list[str]:
+        """Returns key names for presence checks — never returns values."""
+        rows = await self._db.fetch_all(
+            "SELECT key FROM tenant_secrets WHERE tenant_id = $1 ORDER BY key",
+            tenant_id,
+        )
+        return [str(r["key"]) for r in rows]
+
+
+# ── cadences ──────────────────────────────────────────────────────
+
+
+@dataclass
+class CadenceRecord:
+    id: int
+    tenant_id: str
+    name: str
+    cron: str
+    prompt: str
+    feedback_last_n: int
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class CadencesRepo:
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def list_for_tenant(self, tenant_id: str) -> list[CadenceRecord]:
+        rows = await self._db.fetch_all(
+            "SELECT * FROM cadences WHERE tenant_id = $1 ORDER BY name",
+            tenant_id,
+        )
+        return [_row_to_cadence(r) for r in rows]
+
+    async def get(self, tenant_id: str, name: str) -> CadenceRecord | None:
+        row = await self._db.fetch_one(
+            "SELECT * FROM cadences WHERE tenant_id = $1 AND name = $2",
+            tenant_id, name,
+        )
+        return _row_to_cadence(row) if row else None
+
+    async def upsert(
+        self,
+        tenant_id: str,
+        *,
+        name: str,
+        cron: str,
+        prompt: str,
+        feedback_last_n: int = 20,
+        enabled: bool = True,
+    ) -> None:
+        now = _now()
+        await self._db.execute(
+            """
+            INSERT INTO cadences
+                (tenant_id, name, cron, prompt, feedback_last_n, enabled,
+                 created_at, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
+            ON CONFLICT (tenant_id, name) DO UPDATE SET
+                cron            = EXCLUDED.cron,
+                prompt          = EXCLUDED.prompt,
+                feedback_last_n = EXCLUDED.feedback_last_n,
+                enabled         = EXCLUDED.enabled,
+                updated_at      = EXCLUDED.updated_at
+            """,
+            tenant_id, name, cron, prompt, feedback_last_n, enabled, now,
+        )
+
+    async def delete(self, tenant_id: str, name: str) -> None:
+        await self._db.execute(
+            "DELETE FROM cadences WHERE tenant_id = $1 AND name = $2",
+            tenant_id, name,
+        )
+
+
+def _row_to_cadence(row: asyncpg.Record) -> CadenceRecord:
+    return CadenceRecord(
+        id=row["id"],
+        tenant_id=row["tenant_id"],
+        name=row["name"],
+        cron=row["cron"],
+        prompt=row["prompt"],
+        feedback_last_n=row["feedback_last_n"],
+        enabled=row["enabled"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+# ── source_state ──────────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class SourceState:
     tenant_id: str
     source_name: str
-    last_seen_at: str | None
-    last_polled_at: str | None
-    needs_reauth: bool
+    last_seen_at: datetime | None
+    last_polled_at: datetime | None
 
 
 class SourceStateRepo:
@@ -71,8 +299,8 @@ class SourceStateRepo:
 
     async def get(self, tenant_id: str, source_name: str) -> SourceState | None:
         row = await self._db.fetch_one(
-            "SELECT * FROM source_state WHERE tenant_id = ? AND source_name = ?",
-            (tenant_id, source_name),
+            "SELECT * FROM source_state WHERE tenant_id = $1 AND source_name = $2",
+            tenant_id, source_name,
         )
         if row is None:
             return None
@@ -81,7 +309,6 @@ class SourceStateRepo:
             source_name=row["source_name"],
             last_seen_at=row["last_seen_at"],
             last_polled_at=row["last_polled_at"],
-            needs_reauth=bool(row["needs_reauth"]),
         )
 
     async def upsert(
@@ -89,9 +316,8 @@ class SourceStateRepo:
         tenant_id: str,
         source_name: str,
         *,
-        last_seen_at: str | None = None,
-        last_polled_at: str | None = None,
-        needs_reauth: bool | None = None,
+        last_seen_at: datetime | None = None,
+        last_polled_at: datetime | None = None,
     ) -> None:
         current = await self.get(tenant_id, source_name)
         effective_last_seen = last_seen_at if last_seen_at is not None else (
@@ -100,31 +326,21 @@ class SourceStateRepo:
         effective_polled = last_polled_at if last_polled_at is not None else (
             current.last_polled_at if current else None
         )
-        effective_reauth = needs_reauth if needs_reauth is not None else (
-            current.needs_reauth if current else False
+        await self._db.execute(
+            """
+            INSERT INTO source_state
+                (tenant_id, source_name, last_seen_at, last_polled_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (tenant_id, source_name) DO UPDATE SET
+                last_seen_at   = EXCLUDED.last_seen_at,
+                last_polled_at = EXCLUDED.last_polled_at
+            """,
+            tenant_id, source_name, effective_last_seen, effective_polled,
         )
-        async for conn in self._db.iter_writes():
-            await conn.execute(
-                """
-                INSERT INTO source_state
-                    (tenant_id, source_name, last_seen_at, last_polled_at, needs_reauth)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(tenant_id, source_name) DO UPDATE SET
-                    last_seen_at = excluded.last_seen_at,
-                    last_polled_at = excluded.last_polled_at,
-                    needs_reauth = excluded.needs_reauth
-                """,
-                (
-                    tenant_id,
-                    source_name,
-                    effective_last_seen,
-                    effective_polled,
-                    1 if effective_reauth else 0,
-                ),
-            )
 
 
-# ── destination_state ───────────────────────────────────────────
+# ── destination_state ────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class DestinationState:
@@ -133,8 +349,7 @@ class DestinationState:
     needs_reauth: bool
     degraded: bool
     last_error: str | None
-    rate_limit_reset_at: str | None
-    updated_at: str
+    updated_at: datetime
 
 
 class DestinationStateRepo:
@@ -143,18 +358,17 @@ class DestinationStateRepo:
 
     async def get(self, tenant_id: str, platform: str) -> DestinationState | None:
         row = await self._db.fetch_one(
-            "SELECT * FROM destination_state WHERE tenant_id = ? AND platform = ?",
-            (tenant_id, platform),
+            "SELECT * FROM destination_state WHERE tenant_id = $1 AND platform = $2",
+            tenant_id, platform,
         )
         if row is None:
             return None
         return DestinationState(
             tenant_id=row["tenant_id"],
             platform=row["platform"],
-            needs_reauth=bool(row["needs_reauth"]),
-            degraded=bool(row["degraded"]),
+            needs_reauth=row["needs_reauth"],
+            degraded=row["degraded"],
             last_error=row["last_error"],
-            rate_limit_reset_at=row["rate_limit_reset_at"],
             updated_at=row["updated_at"],
         )
 
@@ -166,10 +380,9 @@ class DestinationStateRepo:
         needs_reauth: bool | None = None,
         degraded: bool | None = None,
         last_error: str | None = None,
-        rate_limit_reset_at: str | None = None,
     ) -> None:
         current = await self.get(tenant_id, platform)
-        now = utc_now()
+        now = _now()
         effective_reauth = needs_reauth if needs_reauth is not None else (
             current.needs_reauth if current else False
         )
@@ -179,36 +392,40 @@ class DestinationStateRepo:
         effective_error = last_error if last_error is not None else (
             current.last_error if current else None
         )
-        effective_reset = rate_limit_reset_at if rate_limit_reset_at is not None else (
-            current.rate_limit_reset_at if current else None
+        await self._db.execute(
+            """
+            INSERT INTO destination_state
+                (tenant_id, platform, needs_reauth, degraded, last_error, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (tenant_id, platform) DO UPDATE SET
+                needs_reauth = EXCLUDED.needs_reauth,
+                degraded     = EXCLUDED.degraded,
+                last_error   = EXCLUDED.last_error,
+                updated_at   = EXCLUDED.updated_at
+            """,
+            tenant_id, platform, effective_reauth, effective_degraded,
+            effective_error, now,
         )
-        async for conn in self._db.iter_writes():
-            await conn.execute(
-                """
-                INSERT INTO destination_state
-                    (tenant_id, platform, needs_reauth, degraded, last_error,
-                     rate_limit_reset_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(tenant_id, platform) DO UPDATE SET
-                    needs_reauth = excluded.needs_reauth,
-                    degraded = excluded.degraded,
-                    last_error = excluded.last_error,
-                    rate_limit_reset_at = excluded.rate_limit_reset_at,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    tenant_id,
-                    platform,
-                    1 if effective_reauth else 0,
-                    1 if effective_degraded else 0,
-                    effective_error,
-                    effective_reset,
-                    now,
-                ),
+
+    async def list_for_tenant(self, tenant_id: str) -> list[DestinationState]:
+        rows = await self._db.fetch_all(
+            "SELECT * FROM destination_state WHERE tenant_id = $1", tenant_id
+        )
+        return [
+            DestinationState(
+                tenant_id=r["tenant_id"],
+                platform=r["platform"],
+                needs_reauth=r["needs_reauth"],
+                degraded=r["degraded"],
+                last_error=r["last_error"],
+                updated_at=r["updated_at"],
             )
+            for r in rows
+        ]
 
 
-# ── publish_events ──────────────────────────────────────────────
+# ── publish_events ───────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class PublishEventRecord:
@@ -219,8 +436,8 @@ class PublishEventRecord:
     title: str
     url: str
     excerpt: str | None
-    published_at: str
-    detected_at: str
+    published_at: datetime
+    detected_at: datetime
 
 
 class PublishEventsRepo:
@@ -236,44 +453,26 @@ class PublishEventsRepo:
         title: str,
         url: str,
         excerpt: str | None,
-        published_at: str,
+        published_at: datetime,
     ) -> PublishEventRecord | None:
         """Idempotent insert. Returns the row if inserted, else None."""
-
-        detected_at = utc_now()
+        detected_at = _now()
         try:
-            async for conn in self._db.iter_writes():
+            async with self._db.pool.acquire() as conn:
                 await conn.execute(
                     """
                     INSERT INTO publish_events
                         (tenant_id, source_name, source_post_id, title, url,
                          excerpt, published_at, detected_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     """,
-                    (
-                        tenant_id,
-                        source_name,
-                        source_post_id,
-                        title,
-                        url,
-                        excerpt,
-                        published_at,
-                        detected_at,
-                    ),
+                    tenant_id, source_name, source_post_id, title, url,
+                    excerpt, published_at, detected_at,
                 )
-        except aiosqlite.IntegrityError:
+        except asyncpg.UniqueViolationError:
             return None
 
-        row = await self._db.fetch_one(
-            """
-            SELECT * FROM publish_events
-            WHERE tenant_id = ? AND source_name = ? AND source_post_id = ?
-            """,
-            (tenant_id, source_name, source_post_id),
-        )
-        if row is None:  # pragma: no cover — race impossible after successful insert
-            return None
-        return _row_to_publish_event(row)
+        return await self.get_by_source_id(tenant_id, source_name, source_post_id)
 
     async def get_by_source_id(
         self, tenant_id: str, source_name: str, source_post_id: str
@@ -281,16 +480,15 @@ class PublishEventsRepo:
         row = await self._db.fetch_one(
             """
             SELECT * FROM publish_events
-            WHERE tenant_id = ? AND source_name = ? AND source_post_id = ?
+            WHERE tenant_id = $1 AND source_name = $2 AND source_post_id = $3
             """,
-            (tenant_id, source_name, source_post_id),
+            tenant_id, source_name, source_post_id,
         )
         return _row_to_publish_event(row) if row else None
 
     async def get_by_id(self, publish_event_id: int) -> PublishEventRecord | None:
         row = await self._db.fetch_one(
-            "SELECT * FROM publish_events WHERE id = ?",
-            (publish_event_id,),
+            "SELECT * FROM publish_events WHERE id = $1", publish_event_id
         )
         return _row_to_publish_event(row) if row else None
 
@@ -300,16 +498,16 @@ class PublishEventsRepo:
         rows = await self._db.fetch_all(
             """
             SELECT * FROM publish_events
-            WHERE tenant_id = ?
+            WHERE tenant_id = $1
             ORDER BY detected_at DESC
-            LIMIT ?
+            LIMIT $2
             """,
-            (tenant_id, limit),
+            tenant_id, limit,
         )
-        return [_row_to_publish_event(row) for row in rows]
+        return [_row_to_publish_event(r) for r in rows]
 
 
-def _row_to_publish_event(row: aiosqlite.Row) -> PublishEventRecord:
+def _row_to_publish_event(row: asyncpg.Record) -> PublishEventRecord:
     return PublishEventRecord(
         id=row["id"],
         tenant_id=row["tenant_id"],
@@ -323,7 +521,8 @@ def _row_to_publish_event(row: aiosqlite.Row) -> PublishEventRecord:
     )
 
 
-# ── distribution_records ────────────────────────────────────────
+# ── distribution_records ─────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class DistributionRecord:
@@ -335,8 +534,8 @@ class DistributionRecord:
     platform_post_id: str | None
     copy: str | None
     error: str | None
-    attempted_at: str
-    completed_at: str | None
+    attempted_at: datetime
+    completed_at: datetime | None
 
 
 class DistributionRecordsRepo:
@@ -351,21 +550,24 @@ class DistributionRecordsRepo:
         platform: str,
     ) -> DistributionRecord | None:
         """Insert a pending row. Returns None if another runner already claimed it."""
-
-        attempted_at = utc_now()
+        attempted_at = _now()
         try:
-            async for conn in self._db.iter_writes():
+            async with self._db.pool.acquire() as conn:
                 await conn.execute(
                     """
                     INSERT INTO distribution_records
                         (tenant_id, publish_event_id, platform, status, attempted_at)
-                    VALUES (?, ?, ?, 'pending', ?)
+                    VALUES ($1, $2, $3, 'pending', $4)
                     """,
-                    (tenant_id, publish_event_id, platform, attempted_at),
+                    tenant_id, publish_event_id, platform, attempted_at,
                 )
-        except aiosqlite.IntegrityError:
+        except asyncpg.UniqueViolationError:
             return None
-        return await self.get(tenant_id=tenant_id, publish_event_id=publish_event_id, platform=platform)
+        return await self.get(
+            tenant_id=tenant_id,
+            publish_event_id=publish_event_id,
+            platform=platform,
+        )
 
     async def complete(
         self,
@@ -378,23 +580,16 @@ class DistributionRecordsRepo:
         copy: str | None = None,
         error: str | None = None,
     ) -> None:
-        completed_at = utc_now()
+        completed_at = _now()
         await self._db.execute(
             """
             UPDATE distribution_records
-            SET status = ?, platform_post_id = ?, copy = ?, error = ?, completed_at = ?
-            WHERE tenant_id = ? AND publish_event_id = ? AND platform = ?
+            SET status = $1, platform_post_id = $2, copy = $3,
+                error = $4, completed_at = $5
+            WHERE tenant_id = $6 AND publish_event_id = $7 AND platform = $8
             """,
-            (
-                status,
-                platform_post_id,
-                copy,
-                error,
-                completed_at,
-                tenant_id,
-                publish_event_id,
-                platform,
-            ),
+            status, platform_post_id, copy, error, completed_at,
+            tenant_id, publish_event_id, platform,
         )
 
     async def replace_on_retry(
@@ -405,15 +600,15 @@ class DistributionRecordsRepo:
         platform: str,
     ) -> None:
         """Reset a failed row to pending for retry (spec invariant 5)."""
-
         await self._db.execute(
             """
             UPDATE distribution_records
             SET status = 'pending', error = NULL, completed_at = NULL,
-                platform_post_id = NULL, attempted_at = ?
-            WHERE tenant_id = ? AND publish_event_id = ? AND platform = ? AND status = 'failed'
+                platform_post_id = NULL, attempted_at = $1
+            WHERE tenant_id = $2 AND publish_event_id = $3
+              AND platform = $4 AND status = 'failed'
             """,
-            (utc_now(), tenant_id, publish_event_id, platform),
+            _now(), tenant_id, publish_event_id, platform,
         )
 
     async def get(
@@ -422,9 +617,9 @@ class DistributionRecordsRepo:
         row = await self._db.fetch_one(
             """
             SELECT * FROM distribution_records
-            WHERE tenant_id = ? AND publish_event_id = ? AND platform = ?
+            WHERE tenant_id = $1 AND publish_event_id = $2 AND platform = $3
             """,
-            (tenant_id, publish_event_id, platform),
+            tenant_id, publish_event_id, platform,
         )
         return _row_to_distribution(row) if row else None
 
@@ -434,37 +629,35 @@ class DistributionRecordsRepo:
         rows = await self._db.fetch_all(
             """
             SELECT * FROM distribution_records
-            WHERE tenant_id = ? AND publish_event_id = ?
+            WHERE tenant_id = $1 AND publish_event_id = $2
             """,
-            (tenant_id, publish_event_id),
+            tenant_id, publish_event_id,
         )
-        return [_row_to_distribution(row) for row in rows]
+        return [_row_to_distribution(r) for r in rows]
 
     async def list_retryable(self, tenant_id: str) -> list[DistributionRecord]:
-        """Rows that the share-sweep should revisit (failed with transient error)."""
-
         rows = await self._db.fetch_all(
             """
             SELECT * FROM distribution_records
-            WHERE tenant_id = ? AND status = 'failed'
+            WHERE tenant_id = $1 AND status = 'failed'
             ORDER BY attempted_at ASC
             """,
-            (tenant_id,),
+            tenant_id,
         )
-        return [_row_to_distribution(row) for row in rows]
+        return [_row_to_distribution(r) for r in rows]
 
     async def count_pending(self, tenant_id: str) -> int:
-        row = await self._db.fetch_one(
+        val = await self._db.fetch_val(
             """
-            SELECT COUNT(*) AS c FROM distribution_records
-            WHERE tenant_id = ? AND status IN ('pending', 'failed')
+            SELECT COUNT(*) FROM distribution_records
+            WHERE tenant_id = $1 AND status IN ('pending', 'failed')
             """,
-            (tenant_id,),
+            tenant_id,
         )
-        return int(row["c"]) if row else 0
+        return int(val) if val is not None else 0  # type: ignore[call-overload]
 
 
-def _row_to_distribution(row: aiosqlite.Row) -> DistributionRecord:
+def _row_to_distribution(row: asyncpg.Record) -> DistributionRecord:
     return DistributionRecord(
         id=row["id"],
         tenant_id=row["tenant_id"],
@@ -479,7 +672,61 @@ def _row_to_distribution(row: aiosqlite.Row) -> DistributionRecord:
     )
 
 
-# ── scheduled_tweets ────────────────────────────────────────────
+# ── daemon_heartbeat ──────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class DaemonHeartbeat:
+    started_at: datetime
+    version: str
+    tenant_count: int
+    job_count: int
+    updated_at: datetime
+
+
+class DaemonHeartbeatRepo:
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def upsert(
+        self,
+        *,
+        started_at: datetime,
+        version: str,
+        tenant_count: int,
+        job_count: int,
+    ) -> None:
+        now = _now()
+        await self._db.execute(
+            """
+            INSERT INTO daemon_heartbeat
+                (id, started_at, version, tenant_count, job_count, updated_at)
+            VALUES (1, $1, $2, $3, $4, $5)
+            ON CONFLICT (id) DO UPDATE SET
+                started_at   = EXCLUDED.started_at,
+                version      = EXCLUDED.version,
+                tenant_count = EXCLUDED.tenant_count,
+                job_count    = EXCLUDED.job_count,
+                updated_at   = EXCLUDED.updated_at
+            """,
+            started_at, version, tenant_count, job_count, now,
+        )
+
+    async def get(self) -> DaemonHeartbeat | None:
+        row = await self._db.fetch_one("SELECT * FROM daemon_heartbeat WHERE id = 1")
+        if row is None:
+            return None
+        return DaemonHeartbeat(
+            started_at=row["started_at"],
+            version=row["version"],
+            tenant_count=row["tenant_count"],
+            job_count=row["job_count"],
+            updated_at=row["updated_at"],
+        )
+
+
+# ── scheduled_tweets ─────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class ScheduledTweetRecord:
@@ -490,7 +737,7 @@ class ScheduledTweetRecord:
     platform_post_id: str | None
     status: str
     error: str | None
-    posted_at: str
+    posted_at: datetime
 
 
 class ScheduledTweetsRepo:
@@ -510,18 +757,12 @@ class ScheduledTweetsRepo:
         await self._db.execute(
             """
             INSERT INTO scheduled_tweets
-                (tenant_id, cadence_name, text, platform_post_id, status, error, posted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (tenant_id, cadence_name, text, platform_post_id,
+                 status, error, posted_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             """,
-            (
-                tenant_id,
-                cadence_name,
-                text,
-                platform_post_id,
-                status,
-                error,
-                utc_now(),
-            ),
+            tenant_id, cadence_name, text, platform_post_id,
+            status, error, _now(),
         )
 
     async def list_recent_sent(
@@ -530,13 +771,13 @@ class ScheduledTweetsRepo:
         rows = await self._db.fetch_all(
             """
             SELECT * FROM scheduled_tweets
-            WHERE tenant_id = ? AND cadence_name = ? AND status = 'sent'
+            WHERE tenant_id = $1 AND cadence_name = $2 AND status = 'sent'
             ORDER BY posted_at DESC
-            LIMIT ?
+            LIMIT $3
             """,
-            (tenant_id, cadence_name, limit),
+            tenant_id, cadence_name, limit,
         )
-        return [_row_to_scheduled_tweet(row) for row in rows]
+        return [_row_to_scheduled_tweet(r) for r in rows]
 
     async def list_recent(
         self, tenant_id: str, cadence_name: str | None = None, limit: int = 20
@@ -545,26 +786,26 @@ class ScheduledTweetsRepo:
             rows = await self._db.fetch_all(
                 """
                 SELECT * FROM scheduled_tweets
-                WHERE tenant_id = ? AND cadence_name = ?
+                WHERE tenant_id = $1 AND cadence_name = $2
                 ORDER BY posted_at DESC
-                LIMIT ?
+                LIMIT $3
                 """,
-                (tenant_id, cadence_name, limit),
+                tenant_id, cadence_name, limit,
             )
         else:
             rows = await self._db.fetch_all(
                 """
                 SELECT * FROM scheduled_tweets
-                WHERE tenant_id = ?
+                WHERE tenant_id = $1
                 ORDER BY posted_at DESC
-                LIMIT ?
+                LIMIT $2
                 """,
-                (tenant_id, limit),
+                tenant_id, limit,
             )
-        return [_row_to_scheduled_tweet(row) for row in rows]
+        return [_row_to_scheduled_tweet(r) for r in rows]
 
 
-def _row_to_scheduled_tweet(row: aiosqlite.Row) -> ScheduledTweetRecord:
+def _row_to_scheduled_tweet(row: asyncpg.Record) -> ScheduledTweetRecord:
     return ScheduledTweetRecord(
         id=row["id"],
         tenant_id=row["tenant_id"],
@@ -574,4 +815,127 @@ def _row_to_scheduled_tweet(row: aiosqlite.Row) -> ScheduledTweetRecord:
         status=row["status"],
         error=row["error"],
         posted_at=row["posted_at"],
+    )
+
+
+# ── prompts ──────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class PromptRecord:
+    id: int
+    tenant_id: str | None
+    name: str
+    content: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class PromptsRepo:
+    """Read/write prompts from the DB.
+
+    Resolution order per spec/product/08-prompts.md: tenant row → operator row.
+    Operator rows have tenant_id IS NULL.
+    """
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def resolve(self, tenant_id: str, name: str) -> PromptRecord | None:
+        """Return the tenant override if it exists, else the operator default."""
+        row = await self._db.fetch_one(
+            """
+            SELECT * FROM prompts
+            WHERE name = $1 AND (tenant_id = $2 OR tenant_id IS NULL)
+            ORDER BY tenant_id IS NULL  -- tenant row first (false < true)
+            LIMIT 1
+            """,
+            name, tenant_id,
+        )
+        if row is None:
+            return None
+        return _row_to_prompt(row)
+
+    async def get_operator(self, name: str) -> PromptRecord | None:
+        row = await self._db.fetch_one(
+            "SELECT * FROM prompts WHERE tenant_id IS NULL AND name = $1",
+            name,
+        )
+        return _row_to_prompt(row) if row else None
+
+    async def get_tenant(self, tenant_id: str, name: str) -> PromptRecord | None:
+        row = await self._db.fetch_one(
+            "SELECT * FROM prompts WHERE tenant_id = $1 AND name = $2",
+            tenant_id, name,
+        )
+        return _row_to_prompt(row) if row else None
+
+    async def list_operator(self) -> list[PromptRecord]:
+        rows = await self._db.fetch_all(
+            "SELECT * FROM prompts WHERE tenant_id IS NULL ORDER BY name"
+        )
+        return [_row_to_prompt(r) for r in rows]
+
+    async def list_for_tenant(self, tenant_id: str) -> list[PromptRecord]:
+        """Return all prompts relevant to a tenant — overrides + operator defaults."""
+        rows = await self._db.fetch_all(
+            """
+            SELECT DISTINCT ON (name) *
+            FROM prompts
+            WHERE tenant_id = $1 OR tenant_id IS NULL
+            ORDER BY name, tenant_id IS NULL
+            """,
+            tenant_id,
+        )
+        return [_row_to_prompt(r) for r in rows]
+
+    async def list_tenant_overrides(self, tenant_id: str) -> list[PromptRecord]:
+        rows = await self._db.fetch_all(
+            "SELECT * FROM prompts WHERE tenant_id = $1 ORDER BY name",
+            tenant_id,
+        )
+        return [_row_to_prompt(r) for r in rows]
+
+    async def upsert_operator(self, name: str, content: str) -> None:
+        now = _now()
+        await self._db.execute(
+            """
+            INSERT INTO prompts (tenant_id, name, content, created_at, updated_at)
+            VALUES (NULL, $1, $2, $3, $3)
+            ON CONFLICT ON CONSTRAINT prompts_tenant_id_name_key DO UPDATE SET
+                content    = EXCLUDED.content,
+                updated_at = EXCLUDED.updated_at
+            """,
+            name, content, now,
+        )
+
+    async def upsert_tenant(self, tenant_id: str, name: str, content: str) -> None:
+        now = _now()
+        await self._db.execute(
+            """
+            INSERT INTO prompts (tenant_id, name, content, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $4)
+            ON CONFLICT ON CONSTRAINT prompts_tenant_id_name_key DO UPDATE SET
+                content    = EXCLUDED.content,
+                updated_at = EXCLUDED.updated_at
+            """,
+            tenant_id, name, content, now,
+        )
+
+    async def delete_tenant(self, tenant_id: str, name: str) -> bool:
+        row = await self._db.fetch_one(
+            "DELETE FROM prompts WHERE tenant_id = $1 AND name = $2 RETURNING id",
+            tenant_id, name,
+        )
+        return row is not None
+
+
+def _row_to_prompt(row: asyncpg.Record) -> PromptRecord:
+    return PromptRecord(
+        id=row["id"],
+        tenant_id=row["tenant_id"],
+        name=row["name"],
+        content=row["content"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )

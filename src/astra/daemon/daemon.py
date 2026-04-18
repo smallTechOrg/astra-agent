@@ -1,4 +1,4 @@
-"""AstraDaemon — loads tenants, wires APScheduler jobs, handles shutdown.
+"""AstraDaemon — loads tenants from DB, wires APScheduler jobs, handles shutdown.
 
 Per spec/product/02-architecture.md (process model) and
 spec/product/03-tenancy.md (failure isolation).
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -15,7 +16,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from astra.config.loader import ConfigLoader
 from astra.daemon.runner import TenantRunner
 from astra.db import Database, migrate
-from astra.db.repos import TenantsRepo
+from astra.db.repos import DaemonHeartbeatRepo, PromptsRepo
 from astra.llm.factory import build_llm_client
 from astra.logging import get_logger
 
@@ -24,40 +25,43 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+_VERSION = "0.2.0"
+
 
 class AstraDaemon:
     """Single-process async daemon.
 
-    One scheduler, one DB connection, one LLM client per tenant.
+    One scheduler, one DB connection pool, one LLM client per tenant.
     Degraded tenants are registered but no jobs run for them.
     """
 
-    def __init__(self, config_dir: Path, db_path: Path | None = None) -> None:
+    def __init__(self, config_dir: Path) -> None:
         self._config_dir = config_dir
-        self._db_path = db_path
         self._scheduler = AsyncIOScheduler()
         self._db: Database | None = None
         self._runners: dict[str, TenantRunner] = {}
         self._stop_event = asyncio.Event()
 
     async def start(self) -> None:
-        """Load config, open DB, schedule jobs, then block until shutdown."""
-        cfg = ConfigLoader(self._config_dir).load()
+        """Load config, open DB pool, schedule jobs, then block until shutdown."""
+        loader = ConfigLoader(self._config_dir)
+        cfg = loader.load()
 
-        db_path = self._db_path or (self._config_dir.parent / cfg.operator.database_path)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = Database(db_path)
+        if not cfg.database_url:
+            raise RuntimeError(
+                "DATABASE_URL is not set. Add it to config/.env or the OS environment."
+            )
+
+        self._db = Database(cfg.database_url)
         await self._db.connect()
         await migrate(self._db)
 
-        tenants_repo = TenantsRepo(self._db)
+        loaded_tenants = await loader.load_tenants_from_db(self._db)
 
         enabled_count = 0
         job_count = 0
 
-        for tenant_id, loaded in cfg.tenants.items():
-            await tenants_repo.upsert(tenant_id, loaded.config.name, loaded.config.enabled)
-
+        for tenant_id, loaded in loaded_tenants.items():
             if not loaded.config.enabled:
                 log.info("tenant_skipped", tenant_id=tenant_id, reason="disabled")
                 continue
@@ -79,27 +83,42 @@ class AstraDaemon:
                     model=loaded.config.llm.model or cfg.operator.llm.model,
                     temperature=loaded.config.llm.temperature or cfg.operator.llm.temperature,
                     max_tokens=loaded.config.llm.max_tokens or cfg.operator.llm.max_tokens,
-                    api_key_env=loaded.config.llm.api_key_env or cfg.operator.llm.api_key_env,
+                    api_key_env=cfg.operator.llm.api_key_env,
                 )
 
-            api_key_env = llm_cfg.api_key_env
-            api_key_secret = loaded.secrets.get(api_key_env)
             import os
-            api_key = (
-                api_key_secret.get_secret_value()
-                if api_key_secret
-                else os.environ.get(api_key_env, "")
-            )
-
+            api_key = os.environ.get(llm_cfg.api_key_env, "")
             llm = build_llm_client(llm_cfg, api_key=api_key)
 
             from astra.prompts.resolver import PromptResolver
-            operator_prompts = self._config_dir.parent / "prompts"
-            tenant_prompts = self._config_dir / "tenants" / tenant_id / "prompts"
-            prompts = PromptResolver(
-                operator_prompts_dir=operator_prompts,
-                tenant_prompts_dir=tenant_prompts if tenant_prompts.exists() else None,
-            )
+            prompts = PromptResolver(db=self._db, tenant_id=tenant_id)
+
+            # Per spec/product/08-prompts.md: daemon must fail to start for
+            # a tenant if any required prompt is missing from the DB.
+            required_prompts: list[str] = []
+            if loaded.config.destinations.linkedin.enabled:
+                required_prompts.append(loaded.config.destinations.linkedin.prompt)
+            if loaded.config.destinations.twitter.enabled:
+                required_prompts.append(
+                    loaded.config.destinations.twitter.announcement_prompt
+                )
+            for cadence_cfg in loaded.config.cadences:
+                if cadence_cfg.enabled:
+                    required_prompts.append(cadence_cfg.prompt)
+
+            prompts_repo = PromptsRepo(self._db)
+            missing: list[str] = []
+            for pname in required_prompts:
+                record = await prompts_repo.resolve(tenant_id, pname)
+                if record is None:
+                    missing.append(pname)
+            if missing:
+                log.error(
+                    "tenant_missing_prompts",
+                    tenant_id=tenant_id,
+                    missing=missing,
+                )
+                continue
 
             runner = TenantRunner(
                 tenant=loaded.config,
@@ -110,7 +129,6 @@ class AstraDaemon:
             )
             self._runners[tenant_id] = runner
 
-            # Schedule wp-poll job.
             self._scheduler.add_job(
                 runner.poll_and_distribute,
                 trigger="cron",
@@ -119,7 +137,6 @@ class AstraDaemon:
             )
             job_count += 1
 
-            # Schedule share-sweep job.
             self._scheduler.add_job(
                 runner.share_sweep,
                 trigger="cron",
@@ -128,7 +145,6 @@ class AstraDaemon:
             )
             job_count += 1
 
-            # Schedule per-cadence jobs.
             for cadence_cfg in loaded.config.cadences:
                 if not cadence_cfg.enabled:
                     continue
@@ -141,8 +157,17 @@ class AstraDaemon:
                 )
                 job_count += 1
 
-        for error_tenant, error_msg in cfg.load_errors.items():
-            log.error("tenant_load_failed", tenant_id=error_tenant, error=error_msg)
+        await DaemonHeartbeatRepo(self._db).upsert(
+            started_at=datetime.now(UTC),
+            version=_VERSION,
+            tenant_count=enabled_count,
+            job_count=job_count,
+        )
+
+        grace = cfg.operator.daemon.startup_grace_seconds
+        if grace > 0:
+            log.info("startup_grace", seconds=grace)
+            await asyncio.sleep(grace)
 
         self._scheduler.start()
 

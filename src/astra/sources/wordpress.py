@@ -25,6 +25,12 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 _FIRST_RUN_LOOKBACK = timedelta(days=7)
+_WP_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
+
+def _parse_wp_date(date_gmt: str) -> datetime:
+    """Parse WordPress date_gmt (UTC, no Z suffix) → timezone-aware datetime."""
+    return datetime.strptime(date_gmt, _WP_DATE_FORMAT).replace(tzinfo=UTC)
 
 
 class WordPressSource(Source):
@@ -44,12 +50,11 @@ class WordPressSource(Source):
 
         state = await state_repo.get(tenant.id, "wordpress")
         if state is None or state.last_seen_at is None:
-            cutoff = (datetime.now(UTC) - _FIRST_RUN_LOOKBACK).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
-            )
+            cutoff_dt = datetime.now(UTC) - _FIRST_RUN_LOOKBACK
         else:
-            cutoff = state.last_seen_at
+            cutoff_dt = state.last_seen_at
 
+        cutoff = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         url = (
             f"{source_cfg.url.rstrip('/')}/wp-json/wp/v2/posts"
             f"?status=publish&after={cutoff}&per_page=50&orderby=date&order=asc"
@@ -75,7 +80,7 @@ class WordPressSource(Source):
             return []
 
         new_events: list[PublishEvent] = []
-        last_seen: str | None = None
+        last_seen: datetime | None = None
 
         for post in posts:
             try:
@@ -84,7 +89,7 @@ class WordPressSource(Source):
                 link = str(post.get("link", ""))
                 excerpt_raw = post.get("excerpt", {}).get("rendered", "")
                 excerpt = html.unescape(_strip_html(excerpt_raw)) or None
-                published_at = str(post.get("date_gmt", ""))
+                published_at = _parse_wp_date(str(post.get("date_gmt", "")))
 
                 record = await events_repo.insert_if_new(
                     tenant_id=tenant.id,
@@ -118,12 +123,11 @@ class WordPressSource(Source):
             except Exception as exc:  # noqa: BLE001
                 bound.error("publish_event_insert_error", post_id=post.get("id"), reason=str(exc))
 
-        now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         await state_repo.upsert(
             tenant.id,
             "wordpress",
-            last_seen_at=last_seen or None,
-            last_polled_at=now_str,
+            last_seen_at=last_seen,
+            last_polled_at=datetime.now(UTC),
         )
 
         bound.info("publish_poll_complete", new_events_count=len(new_events))
@@ -162,7 +166,7 @@ async def _fetch_posts(url: str, headers: dict[str, str]) -> list[dict[str, Any]
     if resp.status_code == 429:
         raise _RateLimitError("429")
     if resp.status_code >= 500:
-        resp.raise_for_status()  # triggers tenacity retry
+        resp.raise_for_status()
 
     try:
         data = resp.json()

@@ -26,3 +26,7 @@ class AstraContext:
             from astra.config.loader import ConfigLoader
             self._loaded_config = ConfigLoader(self.config_dir).load()
         return self._loaded_config
+
+    @property
+    def database_url(self) -> str:
+        return self.load_config().database_url

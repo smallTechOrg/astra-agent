@@ -9,11 +9,11 @@ Gate (reports/2026-04-17-v0.1-greenfield-implementation.md, phase 2):
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
 
-from astra.db import Database, migrate
 from astra.db.repos import (
     DestinationStateRepo,
     DistributionRecordsRepo,
@@ -24,21 +24,18 @@ from astra.db.repos import (
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from astra.db import Database
+
+_PUB_AT = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 @pytest.fixture
-async def db(tmp_path: Path) -> Database:
-    database = Database(tmp_path / "astra.sqlite")
-    await database.connect()
-    await migrate(database)
-    tenants = TenantsRepo(database)
+async def db(db: Database) -> Database:
+    # Seed two tenants for isolation tests.
+    tenants = TenantsRepo(db)
     await tenants.upsert("tenant-a", "Tenant A", enabled=True)
     await tenants.upsert("tenant-b", "Tenant B", enabled=True)
-    try:
-        yield database
-    finally:
-        await database.close()
+    return db
 
 
 # ── publish_events ──────────────────────────────────────────────
@@ -53,7 +50,7 @@ async def test_publish_event_insert_is_idempotent(db: Database) -> None:
         title="Hello",
         url="https://example.com/1",
         excerpt=None,
-        published_at="2026-01-01T00:00:00Z",
+        published_at=_PUB_AT,
     )
     second = await repo.insert_if_new(
         tenant_id="tenant-a",
@@ -62,7 +59,7 @@ async def test_publish_event_insert_is_idempotent(db: Database) -> None:
         title="Hello again",
         url="https://example.com/1",
         excerpt=None,
-        published_at="2026-01-01T00:00:00Z",
+        published_at=_PUB_AT,
     )
 
     assert first is not None
@@ -82,7 +79,7 @@ async def test_publish_events_tenant_isolation(db: Database) -> None:
         title="A post",
         url="https://a.example/1",
         excerpt=None,
-        published_at="2026-01-01T00:00:00Z",
+        published_at=_PUB_AT,
     )
     await repo.insert_if_new(
         tenant_id="tenant-b",
@@ -91,7 +88,7 @@ async def test_publish_events_tenant_isolation(db: Database) -> None:
         title="B post",
         url="https://b.example/1",
         excerpt=None,
-        published_at="2026-01-01T00:00:00Z",
+        published_at=_PUB_AT,
     )
 
     a_rows = await repo.list_recent("tenant-a")
@@ -113,7 +110,7 @@ async def test_publish_events_same_post_id_allowed_across_tenants(db: Database) 
         title="A",
         url="https://a.example/x",
         excerpt=None,
-        published_at="2026-01-01T00:00:00Z",
+        published_at=_PUB_AT,
     )
     b = await repo.insert_if_new(
         tenant_id="tenant-b",
@@ -122,7 +119,7 @@ async def test_publish_events_same_post_id_allowed_across_tenants(db: Database) 
         title="B",
         url="https://b.example/x",
         excerpt=None,
-        published_at="2026-01-01T00:00:00Z",
+        published_at=_PUB_AT,
     )
 
     assert a is not None and b is not None
@@ -142,7 +139,7 @@ async def test_publish_events_concurrent_insert(db: Database) -> None:
             title="Race",
             url="https://a.example/race",
             excerpt=None,
-            published_at="2026-01-01T00:00:00Z",
+            published_at=_PUB_AT,
         )
 
     results = await asyncio.gather(*(ins() for _ in range(5)))
@@ -168,7 +165,7 @@ async def test_claim_pending_is_single_winner(db: Database) -> None:
         title="t",
         url="u",
         excerpt=None,
-        published_at="2026-01-01T00:00:00Z",
+        published_at=_PUB_AT,
     )
     assert event is not None
 
@@ -189,11 +186,11 @@ async def test_distribution_tenant_isolation(db: Database) -> None:
     pubs = PublishEventsRepo(db)
     a = await pubs.insert_if_new(
         tenant_id="tenant-a", source_name="wp", source_post_id="p1",
-        title="t", url="u", excerpt=None, published_at="2026-01-01T00:00:00Z",
+        title="t", url="u", excerpt=None, published_at=_PUB_AT,
     )
     b = await pubs.insert_if_new(
         tenant_id="tenant-b", source_name="wp", source_post_id="p1",
-        title="t", url="u", excerpt=None, published_at="2026-01-01T00:00:00Z",
+        title="t", url="u", excerpt=None, published_at=_PUB_AT,
     )
     assert a is not None and b is not None
 
@@ -229,7 +226,7 @@ async def test_replace_on_retry_only_resets_failed_rows(db: Database) -> None:
     pubs = PublishEventsRepo(db)
     event = await pubs.insert_if_new(
         tenant_id="tenant-a", source_name="wp", source_post_id="p",
-        title="t", url="u", excerpt=None, published_at="2026-01-01T00:00:00Z",
+        title="t", url="u", excerpt=None, published_at=_PUB_AT,
     )
     assert event is not None
 
@@ -268,23 +265,25 @@ async def test_replace_on_retry_only_resets_failed_rows(db: Database) -> None:
 
 async def test_source_state_upsert_and_isolation(db: Database) -> None:
     repo = SourceStateRepo(db)
-    await repo.upsert(
-        "tenant-a", "wp", last_seen_at="2026-01-01T00:00:00Z", needs_reauth=False
-    )
-    await repo.upsert("tenant-b", "wp", last_seen_at="2026-01-02T00:00:00Z")
+    ts_a = datetime(2026, 1, 1, tzinfo=UTC)
+    ts_b = datetime(2026, 1, 2, tzinfo=UTC)
+
+    await repo.upsert("tenant-a", "wp", last_seen_at=ts_a)
+    await repo.upsert("tenant-b", "wp", last_seen_at=ts_b)
 
     a = await repo.get("tenant-a", "wp")
     b = await repo.get("tenant-b", "wp")
     assert a is not None and b is not None
-    assert a.last_seen_at == "2026-01-01T00:00:00Z"
-    assert b.last_seen_at == "2026-01-02T00:00:00Z"
+    assert a.last_seen_at == ts_a
+    assert b.last_seen_at == ts_b
 
     # Partial upsert preserves prior values.
-    await repo.upsert("tenant-a", "wp", needs_reauth=True)
+    ts_a2 = datetime(2026, 1, 3, tzinfo=UTC)
+    await repo.upsert("tenant-a", "wp", last_polled_at=ts_a2)
     a2 = await repo.get("tenant-a", "wp")
     assert a2 is not None
-    assert a2.last_seen_at == "2026-01-01T00:00:00Z"
-    assert a2.needs_reauth is True
+    assert a2.last_seen_at == ts_a  # preserved
+    assert a2.last_polled_at == ts_a2
 
 
 async def test_destination_state_update_and_isolation(db: Database) -> None:
@@ -292,7 +291,6 @@ async def test_destination_state_update_and_isolation(db: Database) -> None:
     await repo.update(
         "tenant-a", "twitter",
         degraded=True, last_error="rate limited",
-        rate_limit_reset_at="2026-01-01T00:15:00Z",
     )
     await repo.update("tenant-b", "twitter", needs_reauth=True)
 
@@ -341,7 +339,7 @@ async def test_tenants_delete_cascades(db: Database) -> None:
     pubs = PublishEventsRepo(db)
     event = await pubs.insert_if_new(
         tenant_id="tenant-a", source_name="wp", source_post_id="p",
-        title="t", url="u", excerpt=None, published_at="2026-01-01T00:00:00Z",
+        title="t", url="u", excerpt=None, published_at=_PUB_AT,
     )
     assert event is not None
 

@@ -32,7 +32,7 @@ def linkedin_auth(
     client_secret: str,
     port: int,
 ) -> None:
-    """Run LinkedIn OAuth2 flow and write token to tenant .env."""
+    """Run LinkedIn OAuth2 flow and write token to tenant_secrets table."""
     import asyncio
 
     exit_code = asyncio.run(_run_linkedin_auth(ctx, tenant_id, client_id, client_secret, port))
@@ -46,42 +46,43 @@ async def _run_linkedin_auth(
     client_secret: str,
     port: int,
 ) -> int:
-    cfg = ctx.load_config()
-    if tenant_id not in cfg.tenants:
-        click.echo(f"Error: tenant {tenant_id!r} not found.", err=True)
-        return 1
+    from astra.db import Database, migrate
+    from astra.db.repos import TenantSecretsRepo, TenantsRepo
 
-    loaded = cfg.tenants[tenant_id]
-    env_var = loaded.config.destinations.linkedin.access_token_env
+    database_url = ctx.database_url
+    async with Database(database_url) as db:
+        await migrate(db)
+        tenant_row = await TenantsRepo(db).get(tenant_id)
+        if tenant_row is None:
+            click.echo(f"Error: tenant {tenant_id!r} not found.", err=True)
+            return 1
 
-    redirect_uri = f"http://localhost:{port}/callback"
-    auth_url = (
-        f"https://www.linkedin.com/oauth/v2/authorization"
-        f"?response_type=code"
-        f"&client_id={client_id}"
-        f"&redirect_uri={redirect_uri}"
-        f"&scope=w_member_social%20r_organization_social"
-    )
+        redirect_uri = f"http://localhost:{port}/callback"
+        auth_url = (
+            "https://www.linkedin.com/oauth/v2/authorization"
+            "?response_type=code"
+            f"&client_id={client_id}"
+            f"&redirect_uri={redirect_uri}"
+            "&scope=w_member_social%20r_organization_social"
+        )
 
-    click.echo("Open this URL in your browser to authorise:")
-    click.echo(f"  {auth_url}")
-    click.echo(f"Listening on http://localhost:{port}/callback ...")
+        click.echo("Open this URL in your browser to authorise:")
+        click.echo(f"  {auth_url}")
+        click.echo(f"Listening on http://localhost:{port}/callback ...")
 
-    code = await _listen_for_code(port)
-    if not code:
-        click.echo("Error: did not receive auth code.", err=True)
-        return 2
+        code = await _listen_for_code(port)
+        if not code:
+            click.echo("Error: did not receive auth code.", err=True)
+            return 2
 
-    token = await _exchange_code(client_id, client_secret, code, redirect_uri)
-    if not token:
-        click.echo("Error: token exchange failed.", err=True)
-        return 2
+        token = await _exchange_code(client_id, client_secret, code, redirect_uri)
+        if not token:
+            click.echo("Error: token exchange failed.", err=True)
+            return 2
 
-    # Write to tenant .env.
-    tenant_env_path = ctx.config_dir / "tenants" / tenant_id / ".env"
-    _update_env_file(tenant_env_path, env_var, token)
+        await TenantSecretsRepo(db).set(tenant_id, "LINKEDIN_ACCESS_TOKEN", token)
 
-    click.echo(f"Token written to {tenant_env_path} ({env_var}=...)")
+    click.echo(f"LinkedIn access token saved to DB for tenant {tenant_id!r}.")
     click.echo("Restart the daemon to clear needs_reauth status.")
     return 0
 
@@ -93,7 +94,6 @@ async def _listen_for_code(port: int) -> str | None:
     from urllib.parse import parse_qs, urlparse
 
     result: list[str] = []
-    asyncio.Event()
 
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -114,7 +114,6 @@ async def _listen_for_code(port: int) -> str | None:
     thread.daemon = True
     thread.start()
 
-    # Wait up to 120s for the callback.
     for _ in range(120):
         await asyncio.sleep(1)
         if result:
@@ -140,12 +139,3 @@ async def _exchange_code(client_id: str, client_secret: str, code: str, redirect
         if resp.status_code != 200:
             return None
         return str(resp.json().get("access_token", ""))
-
-
-def _update_env_file(path: object, key: str, value: str) -> None:
-    from pathlib import Path
-    assert isinstance(path, Path)
-    lines = path.read_text().splitlines() if path.exists() else []
-    new_lines = [line for line in lines if not line.startswith(f"{key}=")]
-    new_lines.append(f"{key}={value}")
-    path.write_text("\n".join(new_lines) + "\n")

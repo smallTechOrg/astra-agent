@@ -1,8 +1,8 @@
-"""SQLite persistence layer.
+"""PostgreSQL persistence layer.
 
-Per spec/product/07-data-model.md: single SQLite file, one DB for all
-tenants, every non-tenants table scoped by `tenant_id` with P1-enforced
-queries (spec/engineering/tenant-isolation.md).
+Per spec/product/07-data-model.md: PostgreSQL via asyncpg, one database
+for all tenants, every non-tenants table scoped by `tenant_id` with
+P1-enforced queries (spec/engineering/tenant-isolation.md).
 """
 
 from __future__ import annotations

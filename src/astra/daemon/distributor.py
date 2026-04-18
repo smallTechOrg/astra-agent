@@ -96,7 +96,7 @@ async def _generate_copy(
     else:
         prompt_name = tenant.destinations.twitter.announcement_prompt
 
-    rendered = prompts.render(
+    rendered = await prompts.render(
         prompt_name,
         title=event.title,
         url=event.url,
@@ -112,22 +112,19 @@ def _build_access_token(
     secrets: dict[str, SecretStr],
     platform: str,
 ) -> str:
-    if platform == "linkedin":
-        env_var = tenant.destinations.linkedin.access_token_env
-        secret = secrets.get(env_var)
-        return secret.get_secret_value() if secret else ""
-
-    # Twitter: pack four keys as pipe-separated string (P5 — secrets passed as args)
-    tw = tenant.destinations.twitter
-    def _get(env_var: str) -> str:
-        s = secrets.get(env_var)
+    def _get(key: str) -> str:
+        s = secrets.get(key)
         return s.get_secret_value() if s else ""
 
+    if platform == "linkedin":
+        return _get("LINKEDIN_ACCESS_TOKEN")
+
+    # Twitter: pack four keys as pipe-separated string (P5 — secrets passed as args)
     return "|".join([
-        _get(tw.api_key_env),
-        _get(tw.api_secret_env),
-        _get(tw.access_token_env),
-        _get(tw.access_secret_env),
+        _get("TWITTER_API_KEY"),
+        _get("TWITTER_API_SECRET"),
+        _get("TWITTER_ACCESS_TOKEN"),
+        _get("TWITTER_ACCESS_SECRET"),
     ])
 
 

@@ -8,8 +8,12 @@ matching class here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 # ── PublishEvent ─────────────────────────────────────────────────
 
@@ -27,7 +31,7 @@ class PublishEvent:
     title: str
     url: str
     excerpt: str | None
-    published_at: str
+    published_at: datetime
     db_id: int | None = field(default=None, compare=False)
 
 

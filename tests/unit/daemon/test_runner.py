@@ -14,13 +14,11 @@ import pytest
 
 from astra.config.models import TenantConfig
 from astra.daemon.runner import TenantRunner
-from astra.db import Database, migrate
 from astra.db.repos import TenantsRepo
 from astra.domain import PublishEvent, TweetSent
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
+    from astra.db import Database
 
 # ── helpers ──────────────────────────────────────────────────────
 
@@ -33,7 +31,6 @@ def _tenant(tenant_id: str = "acme") -> TenantConfig:
             "type": "wordpress",
             "url": "https://blog.example.com",
             "username": "admin",
-            "app_password_env": "WP_APP_PASSWORD",
         },
         "destinations": {
             "twitter": {"enabled": True},
@@ -45,15 +42,9 @@ def _tenant(tenant_id: str = "acme") -> TenantConfig:
 
 
 @pytest.fixture
-async def db(tmp_path: Path) -> Database:
-    database = Database(tmp_path / "astra.sqlite")
-    await database.connect()
-    await migrate(database)
-    await TenantsRepo(database).upsert("acme", "Acme", enabled=True)
-    try:
-        yield database
-    finally:
-        await database.close()
+async def db(db: Database) -> Database:
+    await TenantsRepo(db).upsert("acme", "Acme", enabled=True)
+    return db
 
 
 def _make_runner(tenant: TenantConfig, db: Database) -> TenantRunner:
@@ -61,7 +52,7 @@ def _make_runner(tenant: TenantConfig, db: Database) -> TenantRunner:
     llm.generate_content = AsyncMock(return_value="copy text")
     prompts = MagicMock()
     from astra.prompts.resolver import RenderedPrompt
-    prompts.render = MagicMock(return_value=RenderedPrompt(system_prompt=None, user_prompt="write"))
+    prompts.render = AsyncMock(return_value=RenderedPrompt(system_prompt=None, user_prompt="write"))
     return TenantRunner(
         tenant=tenant,
         db=db,
@@ -91,6 +82,8 @@ async def test_poll_and_distribute_calls_source(db: Database) -> None:
 
 
 async def test_poll_distributes_new_events(db: Database) -> None:
+    from datetime import UTC, datetime
+
     runner = _make_runner(_tenant(), db)
 
     event = PublishEvent(
@@ -100,7 +93,7 @@ async def test_poll_distributes_new_events(db: Database) -> None:
         title="Post",
         url="https://example.com",
         excerpt=None,
-        published_at="2026-01-01T00:00:00Z",
+        published_at=datetime(2026, 1, 1, tzinfo=UTC),
         db_id=1,
     )
 
@@ -126,6 +119,8 @@ async def test_poll_distributes_new_events(db: Database) -> None:
 
 async def test_poll_skips_events_with_no_db_id(db: Database) -> None:
     """Events without db_id (insert collision) are not distributed."""
+    from datetime import UTC, datetime
+
     runner = _make_runner(_tenant(), db)
 
     event = PublishEvent(
@@ -135,7 +130,7 @@ async def test_poll_skips_events_with_no_db_id(db: Database) -> None:
         title="Post",
         url="https://example.com",
         excerpt=None,
-        published_at="2026-01-01T00:00:00Z",
+        published_at=datetime(2026, 1, 1, tzinfo=UTC),
         db_id=None,
     )
 

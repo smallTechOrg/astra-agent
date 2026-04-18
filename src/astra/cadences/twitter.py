@@ -85,7 +85,7 @@ class TwitterCadence(Cadence):
 
         prompt_name = f"twitter_cadence_{cadence_cfg.name}"
         try:
-            rendered = prompts.render(
+            rendered = await prompts.render(
                 prompt_name,
                 recent_tweets=recent_tweets_var,
                 tenant_name=tenant.name,
@@ -223,7 +223,7 @@ class TwitterCadence(Cadence):
         if status == 429:
             reset_at = headers.get("x-rate-limit-reset", "")
             await DestinationStateRepo(db).update(
-                tenant.id, "twitter", rate_limit_reset_at=reset_at or None
+                tenant.id, "twitter", last_error=f"rate_limited:reset={reset_at}" if reset_at else "rate_limited",
             )
             await tweets_repo.insert(
                 tenant_id=tenant.id,

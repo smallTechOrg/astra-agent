@@ -83,7 +83,7 @@ class TenantRunner:
         source_cls = get_source(source_cfg.type)
         source = source_cls()
 
-        app_password_secret = self._secrets.get(source_cfg.app_password_env)
+        app_password_secret = self._secrets.get("WP_APP_PASSWORD")
         app_password = app_password_secret.get_secret_value() if app_password_secret else ""
 
         bound.info("poll_started")
@@ -108,14 +108,7 @@ class TenantRunner:
         cadence_cls = get_cadence("twitter")  # v0.1: only Twitter cadences exist
         cadence = cadence_cls()
 
-        tw = self._tenant.destinations.twitter
-        access_token = _pack_twitter_token(
-            self._secrets,
-            api_key_env=tw.api_key_env,
-            api_secret_env=tw.api_secret_env,
-            access_token_env=tw.access_token_env,
-            access_secret_env=tw.access_secret_env,
-        )
+        access_token = _pack_twitter_token(self._secrets)
 
         result = await cadence.tick(
             self._tenant,
@@ -128,21 +121,14 @@ class TenantRunner:
         bound.info("cadence_tick_completed", result=type(result).__name__)
 
 
-def _pack_twitter_token(
-    secrets: dict[str, SecretStr],
-    *,
-    api_key_env: str,
-    api_secret_env: str,
-    access_token_env: str,
-    access_secret_env: str,
-) -> str:
-    def _get(env_var: str) -> str:
-        s = secrets.get(env_var)
+def _pack_twitter_token(secrets: dict[str, SecretStr]) -> str:
+    def _get(key: str) -> str:
+        s = secrets.get(key)
         return s.get_secret_value() if s else ""
 
     return "|".join([
-        _get(api_key_env),
-        _get(api_secret_env),
-        _get(access_token_env),
-        _get(access_secret_env),
+        _get("TWITTER_API_KEY"),
+        _get("TWITTER_API_SECRET"),
+        _get("TWITTER_ACCESS_TOKEN"),
+        _get("TWITTER_ACCESS_SECRET"),
     ])

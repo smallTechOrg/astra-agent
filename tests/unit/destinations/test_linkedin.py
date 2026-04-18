@@ -14,7 +14,6 @@ import respx
 from httpx import Response
 
 from astra.config.models import TenantConfig
-from astra.db import Database, migrate
 from astra.db.repos import (
     DestinationStateRepo,
     DistributionRecordsRepo,
@@ -25,7 +24,7 @@ from astra.destinations.linkedin import LinkedInOrgDestination
 from astra.domain import PublishEvent, PublishFailure, PublishSkipped, PublishSuccess
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from astra.db import Database
 
 _LI_URL = "https://api.linkedin.com/rest/posts"
 
@@ -39,13 +38,11 @@ def _tenant(tenant_id: str = "acme") -> TenantConfig:
             "type": "wordpress",
             "url": "https://blog.example.com",
             "username": "admin",
-            "app_password_env": "WP_APP_PASSWORD",
         },
         "destinations": {
             "linkedin": {
                 "enabled": True,
                 "organization_id": "12345",
-                "access_token_env": "LINKEDIN_TOKEN",
             }
         },
         "cadences": [],
@@ -53,20 +50,17 @@ def _tenant(tenant_id: str = "acme") -> TenantConfig:
 
 
 @pytest.fixture
-async def db(tmp_path: Path) -> Database:
-    database = Database(tmp_path / "astra.sqlite")
-    await database.connect()
-    await migrate(database)
-    await TenantsRepo(database).upsert("acme", "Acme", enabled=True)
-    await TenantsRepo(database).upsert("beta", "Beta", enabled=True)
-    try:
-        yield database
-    finally:
-        await database.close()
+async def db(db: Database) -> Database:
+    await TenantsRepo(db).upsert("acme", "Acme", enabled=True)
+    await TenantsRepo(db).upsert("beta", "Beta", enabled=True)
+    return db
 
 
 async def _seed_event(db: Database, tenant_id: str = "acme") -> PublishEvent:
+    from datetime import UTC, datetime
+
     repo = PublishEventsRepo(db)
+    pub_at = datetime(2026, 1, 1, tzinfo=UTC)
     rec = await repo.insert_if_new(
         tenant_id=tenant_id,
         source_name="wordpress",
@@ -74,7 +68,7 @@ async def _seed_event(db: Database, tenant_id: str = "acme") -> PublishEvent:
         title="Hello World",
         url="https://blog.example.com/hello",
         excerpt="Short excerpt",
-        published_at="2026-01-01T00:00:00Z",
+        published_at=pub_at,
     )
     assert rec is not None
     return PublishEvent(
@@ -84,7 +78,7 @@ async def _seed_event(db: Database, tenant_id: str = "acme") -> PublishEvent:
         title="Hello World",
         url="https://blog.example.com/hello",
         excerpt="Short excerpt",
-        published_at="2026-01-01T00:00:00Z",
+        published_at=pub_at,
         db_id=rec.id,
     )
 
@@ -214,6 +208,8 @@ async def test_publish_two_tenant_isolation(db: Database) -> None:
     event_a = await _seed_event(db, tenant_id="acme")
 
     # seed an event for tenant-b with same source_post_id
+    from datetime import UTC, datetime
+
     repo = PublishEventsRepo(db)
     rec_b = await repo.insert_if_new(
         tenant_id="beta",
@@ -222,7 +218,7 @@ async def test_publish_two_tenant_isolation(db: Database) -> None:
         title="Beta post",
         url="https://beta.example/p1",
         excerpt=None,
-        published_at="2026-01-01T00:00:00Z",
+        published_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     assert rec_b is not None
     event_b = PublishEvent(
@@ -232,7 +228,7 @@ async def test_publish_two_tenant_isolation(db: Database) -> None:
         title="Beta post",
         url="https://beta.example/p1",
         excerpt=None,
-        published_at="2026-01-01T00:00:00Z",
+        published_at=datetime(2026, 1, 1, tzinfo=UTC),
         db_id=rec_b.id,
     )
 

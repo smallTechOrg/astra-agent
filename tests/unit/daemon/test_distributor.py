@@ -14,7 +14,6 @@ import pytest
 
 from astra.config.models import TenantConfig
 from astra.daemon.distributor import distribute_event, sweep_pending
-from astra.db import Database, migrate
 from astra.db.repos import (
     DistributionRecordsRepo,
     PublishEventsRepo,
@@ -23,8 +22,7 @@ from astra.db.repos import (
 from astra.domain import PublishSuccess
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
+    from astra.db import Database
 
 # ── helpers ──────────────────────────────────────────────────────
 
@@ -42,7 +40,6 @@ def _tenant(
             "type": "wordpress",
             "url": "https://blog.example.com",
             "username": "admin",
-            "app_password_env": "WP_APP_PASSWORD",
         },
         "destinations": {
             "linkedin": {"enabled": linkedin_enabled, "organization_id": "99"},
@@ -53,19 +50,15 @@ def _tenant(
 
 
 @pytest.fixture
-async def db(tmp_path: Path) -> Database:
-    database = Database(tmp_path / "astra.sqlite")
-    await database.connect()
-    await migrate(database)
-    await TenantsRepo(database).upsert("acme", "Acme", enabled=True)
-    await TenantsRepo(database).upsert("beta", "Beta", enabled=True)
-    try:
-        yield database
-    finally:
-        await database.close()
+async def db(db: Database) -> Database:
+    await TenantsRepo(db).upsert("acme", "Acme", enabled=True)
+    await TenantsRepo(db).upsert("beta", "Beta", enabled=True)
+    return db
 
 
 async def _seed_event(db: Database, tenant_id: str = "acme") -> int:
+    from datetime import UTC, datetime
+
     repo = PublishEventsRepo(db)
     rec = await repo.insert_if_new(
         tenant_id=tenant_id,
@@ -74,7 +67,7 @@ async def _seed_event(db: Database, tenant_id: str = "acme") -> int:
         title="Hello World",
         url="https://blog.example.com/hello",
         excerpt="Short excerpt",
-        published_at="2026-01-01T00:00:00Z",
+        published_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     assert rec is not None
     return rec.id
@@ -90,7 +83,7 @@ def _mock_prompts() -> MagicMock:
     from astra.prompts.resolver import RenderedPrompt
 
     prompts = MagicMock()
-    prompts.render = MagicMock(
+    prompts.render = AsyncMock(
         return_value=RenderedPrompt(system_prompt="You are a copywriter.", user_prompt="Write copy.")
     )
     return prompts
