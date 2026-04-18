@@ -17,6 +17,7 @@ from astra.cli.health import health_cmd
 from astra.cli.introspect import events_cmd, tweets_cmd
 from astra.cli.run import run_cmd
 from astra.cli.tenant import tenant_group
+from astra.cli.ui import ui_cmd
 
 
 @click.group()
@@ -53,6 +54,7 @@ main.add_command(cadence_group)
 main.add_command(auth_group)
 main.add_command(events_cmd)
 main.add_command(tweets_cmd)
+main.add_command(ui_cmd)
 
 
 @main.command("version")
