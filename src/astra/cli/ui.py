@@ -23,16 +23,16 @@ _LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
 @click.pass_obj
 def ui_cmd(ctx: AstraContext, host: str, port: int, open_browser: bool) -> None:
     """Start the operator web UI."""
-    from astra.config.secrets import load_dotenv_file
+    from astra.config.loader import ConfigLoader
     from astra.logging import configure_logging
     from astra.ui.server import create_app
 
-    cfg = ctx.load_config()
-    log_level = "debug" if ctx.verbosity > 0 else cfg.operator.log_level
-    configure_logging(json=ctx.json_log, level=log_level)
+    loader = ConfigLoader(ctx.config_dir)
+    database_url = loader.load_bootstrap()
+    ui_password = loader.load_ui_password()
 
-    env = load_dotenv_file(ctx.config_dir / ".env")
-    ui_password = env.get("ASTRA_UI_PASSWORD")
+    configure_logging(json=ctx.json_log, level="info")
+
     loopback = host in _LOOPBACK
 
     # Per spec: refuse to start with non-loopback host unless password is set.
@@ -45,7 +45,7 @@ def ui_cmd(ctx: AstraContext, host: str, port: int, open_browser: bool) -> None:
         sys.exit(1)
 
     app = create_app(
-        db_url=cfg.database_url,
+        db_url=database_url,
         ui_password=ui_password,
         loopback=loopback,
     )
