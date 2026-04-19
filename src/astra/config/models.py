@@ -1,7 +1,7 @@
-"""Pydantic models for operator.yaml and runtime tenant views.
+"""Pydantic models for operator config and runtime tenant views.
 
-Per spec/product/05-config.md: operator.yaml holds operator-level settings;
-tenant config and secrets live in the database (spec/product/07-data-model.md).
+Per spec/product/05-config.md: operator config lives in the operator_config
+DB table; tenant config lives in tenant_config/cadences DB tables.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
-    from astra.db.repos import CadenceRecord
+    from astra.db.repos import CadenceRecord, OperatorConfigRecord
     from astra.db.repos import TenantConfig as DBTenantConfig
 
 LLMProvider = Literal["openai", "anthropic", "groq", "gemini"]
@@ -34,22 +34,31 @@ class LLMConfig(BaseModel):
     model: str = "llama-3.3-70b-versatile"
     temperature: float = 0.8
     max_tokens: int = 2048
-    api_key_env: str = "LLM_API_KEY"
-
-
-class DaemonConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    share_sweep_cron: str = "*/10 * * * *"
-    startup_grace_seconds: int = 5
 
 
 class OperatorConfig(BaseModel):
+    """Operator-level config, loaded from operator_config DB table."""
+
     model_config = ConfigDict(extra="allow")
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
     log_level: LogLevel = "info"
-    daemon: DaemonConfig = Field(default_factory=DaemonConfig)
+    share_sweep_cron: str = "*/10 * * * *"
+    startup_grace_seconds: int = 5
+
+    @classmethod
+    def from_db(cls, record: OperatorConfigRecord) -> OperatorConfig:
+        return cls(
+            llm=LLMConfig(
+                provider=record.llm_provider,
+                model=record.llm_model,
+                temperature=record.llm_temperature,
+                max_tokens=record.llm_max_tokens,
+            ),
+            log_level=record.log_level,
+            share_sweep_cron=record.share_sweep_cron,
+            startup_grace_seconds=record.startup_grace_seconds,
+        )
 
 
 class SourceConfig(BaseModel):

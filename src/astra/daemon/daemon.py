@@ -16,7 +16,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from astra.config.loader import ConfigLoader
 from astra.daemon.runner import TenantRunner
 from astra.db import Database, migrate
-from astra.db.repos import DaemonHeartbeatRepo, PromptsRepo
+from astra.db.repos import DaemonHeartbeatRepo, OperatorSecretsRepo, PromptsRepo
 from astra.llm.factory import build_llm_client
 from astra.logging import get_logger
 
@@ -43,18 +43,27 @@ class AstraDaemon:
         self._stop_event = asyncio.Event()
 
     async def start(self) -> None:
-        """Load config, open DB pool, schedule jobs, then block until shutdown."""
+        """Load config from DB, schedule jobs, then block until shutdown."""
         loader = ConfigLoader(self._config_dir)
-        cfg = loader.load()
+        database_url = loader.load_bootstrap()
 
-        if not cfg.database_url:
+        if not database_url:
             raise RuntimeError(
                 "DATABASE_URL is not set. Add it to config/.env or the OS environment."
             )
 
-        self._db = Database(cfg.database_url)
+        self._db = Database(database_url)
         await self._db.connect()
         await migrate(self._db)
+
+        # Load operator config from DB (per spec/product/05-config.md).
+        operator_cfg = await loader.load_operator_from_db(self._db)
+
+        # Load LLM API key from operator_secrets.
+        secrets_repo = OperatorSecretsRepo(self._db)
+        llm_api_key = await secrets_repo.get("LLM_API_KEY") or ""
+        if not llm_api_key:
+            log.warning("LLM_API_KEY not set in operator_secrets — tenants needing LLM will be degraded")
 
         loaded_tenants = await loader.load_tenants_from_db(self._db)
 
@@ -75,20 +84,17 @@ class AstraDaemon:
                 continue
 
             enabled_count += 1
-            llm_cfg = cfg.operator.llm
+            llm_cfg = operator_cfg.llm
             if loaded.config.llm is not None:
                 from astra.config.models import LLMConfig
                 llm_cfg = LLMConfig(
-                    provider=loaded.config.llm.provider or cfg.operator.llm.provider,
-                    model=loaded.config.llm.model or cfg.operator.llm.model,
-                    temperature=loaded.config.llm.temperature or cfg.operator.llm.temperature,
-                    max_tokens=loaded.config.llm.max_tokens or cfg.operator.llm.max_tokens,
-                    api_key_env=cfg.operator.llm.api_key_env,
+                    provider=loaded.config.llm.provider or operator_cfg.llm.provider,
+                    model=loaded.config.llm.model or operator_cfg.llm.model,
+                    temperature=loaded.config.llm.temperature or operator_cfg.llm.temperature,
+                    max_tokens=loaded.config.llm.max_tokens or operator_cfg.llm.max_tokens,
                 )
 
-            import os
-            api_key = os.environ.get(llm_cfg.api_key_env, "")
-            llm = build_llm_client(llm_cfg, api_key=api_key)
+            llm = build_llm_client(llm_cfg, api_key=llm_api_key)
 
             from astra.prompts.resolver import PromptResolver
             prompts = PromptResolver(db=self._db, tenant_id=tenant_id)
@@ -141,7 +147,7 @@ class AstraDaemon:
                 runner.share_sweep,
                 trigger="cron",
                 id=f"{tenant_id}:share-sweep",
-                **_parse_cron(cfg.operator.daemon.share_sweep_cron),
+                **_parse_cron(operator_cfg.share_sweep_cron),
             )
             job_count += 1
 
@@ -164,7 +170,7 @@ class AstraDaemon:
             job_count=job_count,
         )
 
-        grace = cfg.operator.daemon.startup_grace_seconds
+        grace = operator_cfg.startup_grace_seconds
         if grace > 0:
             log.info("startup_grace", seconds=grace)
             await asyncio.sleep(grace)

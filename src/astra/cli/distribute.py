@@ -6,7 +6,6 @@ Per spec/product/06-cli.md#manual-distribution.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from typing import TYPE_CHECKING
 
@@ -51,6 +50,7 @@ async def _run_distribute(
     from astra.db import Database, migrate
     from astra.db.repos import (
         DistributionRecordsRepo,
+        OperatorSecretsRepo,
         PublishEventsRepo,
         TenantsRepo,
     )
@@ -59,10 +59,13 @@ async def _run_distribute(
     from astra.prompts.resolver import PromptResolver
 
     loader = ConfigLoader(ctx.config_dir)
-    cfg = loader.load()
 
     async with Database(ctx.database_url) as db:
         await migrate(db)
+
+        # Load operator config + LLM key from DB.
+        operator_cfg = await loader.load_operator_from_db(db)
+        llm_api_key = await OperatorSecretsRepo(db).get("LLM_API_KEY") or ""
 
         tenant_row = await TenantsRepo(db).get(tenant_id)
         if tenant_row is None:
@@ -108,8 +111,7 @@ async def _run_distribute(
                     )
                     return 1
 
-        api_key = os.environ.get(cfg.operator.llm.api_key_env, "")
-        llm = build_llm_client(cfg.operator.llm, api_key=api_key)
+        llm = build_llm_client(operator_cfg.llm, api_key=llm_api_key)
         prompts = PromptResolver(db=db, tenant_id=tenant_id)
 
         event = PublishEvent(
@@ -158,19 +160,20 @@ def cadence_run(ctx: AstraContext, tenant_id: str, cadence_name: str, force: boo
 async def _run_cadence(
     ctx: AstraContext, tenant_id: str, cadence_name: str, force: bool
 ) -> int:
-    import os
-
     from astra.config.loader import ConfigLoader
     from astra.daemon.runner import TenantRunner
     from astra.db import Database, migrate
+    from astra.db.repos import OperatorSecretsRepo
     from astra.llm.factory import build_llm_client
     from astra.prompts.resolver import PromptResolver
 
     loader = ConfigLoader(ctx.config_dir)
-    cfg = loader.load()
 
     async with Database(ctx.database_url) as db:
         await migrate(db)
+
+        operator_cfg = await loader.load_operator_from_db(db)
+        llm_api_key = await OperatorSecretsRepo(db).get("LLM_API_KEY") or ""
 
         loaded_map = await loader.load_tenants_from_db(db)
         loaded = loaded_map.get(tenant_id)
@@ -194,8 +197,7 @@ async def _run_cadence(
             )
             return 1
 
-        api_key = os.environ.get(cfg.operator.llm.api_key_env, "")
-        llm = build_llm_client(cfg.operator.llm, api_key=api_key)
+        llm = build_llm_client(operator_cfg.llm, api_key=llm_api_key)
         prompts = PromptResolver(db=db, tenant_id=tenant_id)
 
         runner = TenantRunner(

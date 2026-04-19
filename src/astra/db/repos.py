@@ -939,3 +939,101 @@ def _row_to_prompt(row: asyncpg.Record) -> PromptRecord:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+# ── operator_config ──────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class OperatorConfigRecord:
+    llm_provider: str
+    llm_model: str
+    llm_temperature: float
+    llm_max_tokens: int
+    log_level: str
+    share_sweep_cron: str
+    startup_grace_seconds: int
+    updated_at: datetime
+
+
+class OperatorConfigRepo:
+    """Singleton operator_config row. Per spec/product/05-config.md."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def get(self) -> OperatorConfigRecord | None:
+        row = await self._db.fetch_one("SELECT * FROM operator_config WHERE id = 1")
+        if row is None:
+            return None
+        return OperatorConfigRecord(
+            llm_provider=row["llm_provider"],
+            llm_model=row["llm_model"],
+            llm_temperature=row["llm_temperature"],
+            llm_max_tokens=row["llm_max_tokens"],
+            log_level=row["log_level"],
+            share_sweep_cron=row["share_sweep_cron"],
+            startup_grace_seconds=row["startup_grace_seconds"],
+            updated_at=row["updated_at"],
+        )
+
+    async def update(self, **kwargs: object) -> None:
+        """Partial update. Only pass columns to change."""
+        allowed = {
+            "llm_provider", "llm_model", "llm_temperature", "llm_max_tokens",
+            "log_level", "share_sweep_cron", "startup_grace_seconds",
+        }
+        to_set = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+        if not to_set:
+            return
+        to_set["updated_at"] = _now()
+        set_clause = ", ".join(f"{k} = ${i+1}" for i, k in enumerate(to_set))
+        values = list(to_set.values())
+        await self._db.execute(
+            f"UPDATE operator_config SET {set_clause} WHERE id = 1",  # noqa: S608
+            *values,
+        )
+
+
+# ── operator_secrets ─────────────────────────────────────────────
+
+
+class OperatorSecretsRepo:
+    """Operator-level secrets. Per spec/product/05-config.md."""
+
+    _KNOWN_KEYS = frozenset({"LLM_API_KEY", "LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"})
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def get(self, key: str) -> str | None:
+        row = await self._db.fetch_one(
+            "SELECT value FROM operator_secrets WHERE key = $1", key
+        )
+        return str(row["value"]) if row else None
+
+    async def set(self, key: str, value: str) -> None:
+        now = _now()
+        await self._db.execute(
+            """
+            INSERT INTO operator_secrets (key, value, updated_at)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (key) DO UPDATE SET
+                value      = EXCLUDED.value,
+                updated_at = EXCLUDED.updated_at
+            """,
+            key, value, now,
+        )
+
+    async def delete(self, key: str) -> bool:
+        row = await self._db.fetch_one(
+            "DELETE FROM operator_secrets WHERE key = $1 RETURNING key", key
+        )
+        return row is not None
+
+    async def list_keys(self) -> list[str]:
+        """Returns key names only — never returns values."""
+        rows = await self._db.fetch_all(
+            "SELECT key FROM operator_secrets ORDER BY key"
+        )
+        return [str(r["key"]) for r in rows]

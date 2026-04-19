@@ -15,7 +15,7 @@ class AstraError(Exception):
 # ── Config / loader ─────────────────────────────────────────────
 
 class ConfigValidationError(AstraError):
-    """A tenant.yaml or operator.yaml failed pydantic validation."""
+    """Config data failed pydantic validation."""
 
 
 class SecretInYamlError(AstraError):

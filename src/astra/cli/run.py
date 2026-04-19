@@ -22,8 +22,7 @@ def run_cmd(ctx: AstraContext) -> None:
     from astra.daemon.daemon import AstraDaemon
     from astra.logging import configure_logging
 
-    cfg = ctx.load_config()
-    log_level = "debug" if ctx.verbosity > 0 else cfg.operator.log_level
+    log_level = "debug" if ctx.verbosity > 0 else "info"
     configure_logging(json=ctx.json_log, level=log_level)
 
     daemon = AstraDaemon(ctx.config_dir)

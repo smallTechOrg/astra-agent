@@ -1,7 +1,7 @@
 """LLM client abstraction.
 
 Per spec/product/02-architecture.md#llmclient and spec/product/09-extensibility.md:
-abstract LLMClient + four concrete providers, factory keyed on operator.yaml llm.provider.
+abstract LLMClient + four concrete providers, factory keyed on operator_config.llm_provider.
 Per-tenant api_key_env override is passed as a resolved secret, not stored on module state (P5).
 """
 

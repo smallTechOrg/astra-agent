@@ -29,22 +29,9 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content)
 
 
-def _operator_yaml() -> str:
-    return """\
-log_level: info
-llm:
-  provider: openai
-  model: gpt-4o-mini
-  api_key_env: OPENAI_API_KEY
-  max_tokens: 512
-  temperature: 0.7
-"""
-
-
 def _build_config(tmp_path: Path) -> Path:
     config_dir = tmp_path / "config"
-    _write(config_dir / "operator.yaml", _operator_yaml())
-    _write(config_dir / ".env", f"OPENAI_API_KEY=sk-test\nDATABASE_URL={_TEST_DSN}\n")
+    _write(config_dir / ".env", f"DATABASE_URL={_TEST_DSN}\n")
     return config_dir
 
 
@@ -214,9 +201,17 @@ def test_health_unknown_tenant_exits_1(tmp_path: Path) -> None:
     mock_db.__aenter__ = AsyncMock(return_value=mock_db)
     mock_db.__aexit__ = AsyncMock()
 
+    mock_secrets_repo = MagicMock()
+    mock_secrets_repo.get = AsyncMock(return_value=None)
+
     with (
         patch("astra.db.Database", return_value=mock_db),
         patch("astra.db.migrate", new_callable=AsyncMock),
+        patch(
+            "astra.config.loader.ConfigLoader.load_operator_from_db",
+            new_callable=AsyncMock,
+        ),
+        patch("astra.db.repos.OperatorSecretsRepo", return_value=mock_secrets_repo),
         patch(
             "astra.config.loader.ConfigLoader.load_tenants_from_db",
             new_callable=AsyncMock,
@@ -237,20 +232,29 @@ def test_health_operator_shows_db_llm(tmp_path: Path) -> None:
     mock_db.__aenter__ = AsyncMock(return_value=mock_db)
     mock_db.__aexit__ = AsyncMock()
 
+    from astra.config.models import OperatorConfig
+
+    mock_secrets_repo = MagicMock()
+    mock_secrets_repo.get = AsyncMock(return_value=None)
+
     with (
         patch("astra.db.Database", return_value=mock_db),
         patch("astra.db.migrate", new_callable=AsyncMock),
+        patch(
+            "astra.config.loader.ConfigLoader.load_operator_from_db",
+            new_callable=AsyncMock,
+            return_value=OperatorConfig(),
+        ),
+        patch("astra.db.repos.OperatorSecretsRepo", return_value=mock_secrets_repo),
         patch(
             "astra.config.loader.ConfigLoader.load_tenants_from_db",
             new_callable=AsyncMock,
             return_value={},
         ),
-        patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}),
     ):
         result = _runner().invoke(main, ["--config-dir", str(config_dir), "health"])
     assert result.exit_code in (0, 2)
     assert "Operator" in result.output
-    assert "LLM" in result.output
 
 
 # ── distribute ────────────────────────────────────────────────────────────────
@@ -266,10 +270,18 @@ def test_distribute_unknown_tenant_exits_1(tmp_path: Path) -> None:
     mock_tenants_repo = MagicMock()
     mock_tenants_repo.get = AsyncMock(return_value=None)
 
+    mock_secrets_repo = MagicMock()
+    mock_secrets_repo.get = AsyncMock(return_value=None)
+
     with (
         patch("astra.db.Database", return_value=mock_db),
         patch("astra.db.migrate", new_callable=AsyncMock),
         patch("astra.db.repos.TenantsRepo", return_value=mock_tenants_repo),
+        patch(
+            "astra.config.loader.ConfigLoader.load_operator_from_db",
+            new_callable=AsyncMock,
+        ),
+        patch("astra.db.repos.OperatorSecretsRepo", return_value=mock_secrets_repo),
     ):
         result = _runner().invoke(
             main,
@@ -307,12 +319,20 @@ def test_distribute_runs_distribution(tmp_path: Path) -> None:
 
     loaded_tenant = _mock_loaded_tenant("acme")
 
+    mock_secrets_repo = MagicMock()
+    mock_secrets_repo.get = AsyncMock(return_value=None)
+
     with (
         patch("astra.db.Database", return_value=mock_db),
         patch("astra.db.migrate", new_callable=AsyncMock),
         patch("astra.db.repos.PublishEventsRepo", return_value=mock_events_repo),
         patch("astra.db.repos.DistributionRecordsRepo", return_value=mock_dist_repo),
         patch("astra.db.repos.TenantsRepo", return_value=mock_tenants_repo),
+        patch(
+            "astra.config.loader.ConfigLoader.load_operator_from_db",
+            new_callable=AsyncMock,
+        ),
+        patch("astra.db.repos.OperatorSecretsRepo", return_value=mock_secrets_repo),
         patch(
             "astra.config.loader.ConfigLoader.load_tenants_from_db",
             new_callable=AsyncMock,
@@ -351,9 +371,17 @@ def test_cadence_run_unknown_tenant_exits_1(tmp_path: Path) -> None:
     mock_db.__aenter__ = AsyncMock(return_value=mock_db)
     mock_db.__aexit__ = AsyncMock()
 
+    mock_secrets_repo = MagicMock()
+    mock_secrets_repo.get = AsyncMock(return_value=None)
+
     with (
         patch("astra.db.Database", return_value=mock_db),
         patch("astra.db.migrate", new_callable=AsyncMock),
+        patch(
+            "astra.config.loader.ConfigLoader.load_operator_from_db",
+            new_callable=AsyncMock,
+        ),
+        patch("astra.db.repos.OperatorSecretsRepo", return_value=mock_secrets_repo),
         patch(
             "astra.config.loader.ConfigLoader.load_tenants_from_db",
             new_callable=AsyncMock,
@@ -374,9 +402,17 @@ def test_cadence_run_unknown_cadence_exits_1(tmp_path: Path) -> None:
     mock_db.__aenter__ = AsyncMock(return_value=mock_db)
     mock_db.__aexit__ = AsyncMock()
 
+    mock_secrets_repo = MagicMock()
+    mock_secrets_repo.get = AsyncMock(return_value=None)
+
     with (
         patch("astra.db.Database", return_value=mock_db),
         patch("astra.db.migrate", new_callable=AsyncMock),
+        patch(
+            "astra.config.loader.ConfigLoader.load_operator_from_db",
+            new_callable=AsyncMock,
+        ),
+        patch("astra.db.repos.OperatorSecretsRepo", return_value=mock_secrets_repo),
         patch(
             "astra.config.loader.ConfigLoader.load_tenants_from_db",
             new_callable=AsyncMock,

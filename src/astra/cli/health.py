@@ -32,21 +32,24 @@ async def _run_health(ctx: AstraContext, tenant_id: str | None) -> int:
 
     from astra.config.loader import ConfigLoader
     from astra.db import Database, migrate
+    from astra.db.repos import OperatorSecretsRepo
 
     loader = ConfigLoader(ctx.config_dir)
-    cfg = loader.load()
     any_failed = False
-
-    if tenant_id is None:
-        click.echo("Operator")
-        llm_status = await _check_llm_env(cfg.operator.llm.api_key_env)
-        click.echo(f"  LLM ({cfg.operator.llm.provider}):{'':>5}{llm_status}")
-        if "FAILED" in llm_status:
-            any_failed = True
-        click.echo("")
 
     async with Database(ctx.database_url) as db:
         await migrate(db)
+
+        if tenant_id is None:
+            click.echo("Operator")
+            operator_cfg = await loader.load_operator_from_db(db)
+            llm_api_key = await OperatorSecretsRepo(db).get("LLM_API_KEY")
+            llm_status = "ok (key present, not tested)" if llm_api_key else "FAILED — LLM_API_KEY not set in operator_secrets"
+            click.echo(f"  LLM ({operator_cfg.llm.provider}):{'':>5}{llm_status}")
+            if "FAILED" in llm_status:
+                any_failed = True
+            click.echo("")
+
         loaded_map = await loader.load_tenants_from_db(db)
 
     if tenant_id is not None and tenant_id not in loaded_map:
@@ -93,14 +96,6 @@ async def _run_health(ctx: AstraContext, tenant_id: str | None) -> int:
         click.echo("")
 
     return 2 if any_failed else 0
-
-
-async def _check_llm_env(api_key_env: str) -> str:
-    import os
-    api_key = os.environ.get(api_key_env, "")
-    if not api_key:
-        return f"FAILED — missing {api_key_env}"
-    return "ok (key present, not tested)"
 
 
 async def _check_wordpress(tenant_cfg: object) -> str:

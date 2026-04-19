@@ -8,7 +8,6 @@ from __future__ import annotations
 from astra.config.loader import ConfigLoader, LoadedConfig, LoadedTenant
 from astra.config.models import (
     CadenceConfig,
-    DaemonConfig,
     LinkedInDestinationConfig,
     LLMConfig,
     OperatorConfig,
@@ -20,7 +19,6 @@ from astra.config.models import (
 __all__ = [
     "CadenceConfig",
     "ConfigLoader",
-    "DaemonConfig",
     "LLMConfig",
     "LinkedInDestinationConfig",
     "LoadedConfig",

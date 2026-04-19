@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from astra.db.migrations._001_initial import SQL as _001_SQL
 from astra.db.migrations._002_prompts import SQL as _002_SQL
+from astra.db.migrations._003_operator_config import SQL as _003_SQL
 
 if TYPE_CHECKING:
     from astra.db.connection import Database
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 _MIGRATIONS: list[tuple[int, str, str]] = [
     (1, "initial_schema", _001_SQL),
     (2, "prompts_table_and_seeds", _002_SQL),
+    (3, "operator_config_and_secrets", _003_SQL),
 ]
 
 CURRENT_SCHEMA_VERSION = max(m[0] for m in _MIGRATIONS)

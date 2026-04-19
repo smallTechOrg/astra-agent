@@ -1,8 +1,8 @@
-"""Load operator config from operator.yaml and tenant config from the database.
+"""Load operator config from DB and tenant config from the database.
 
-Per spec/product/05-config.md: operator.yaml holds operator-level settings;
-tenant config, secrets, and cadences are stored in PostgreSQL. DATABASE_URL
-is read from config/.env (or OS env).
+Per spec/product/05-config.md: operator.yaml is eliminated. All operator
+config lives in the operator_config DB table. DATABASE_URL is the only
+setting read from config/.env (bootstrap secret).
 """
 
 from __future__ import annotations
@@ -12,12 +12,10 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-import yaml
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
 from astra.config.models import OperatorConfig, TenantConfig
-from astra.config.secrets import assert_no_secret_values, load_dotenv_file
-from astra.errors import ConfigValidationError
+from astra.config.secrets import load_dotenv_file
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -44,15 +42,14 @@ class LoadedConfig:
 
 
 class ConfigLoader:
-    """Loads operator config from files; tenant config from the database."""
+    """Loads bootstrap secrets from .env; operator and tenant config from the DB."""
 
     def __init__(self, config_dir: Path, *, os_env: dict[str, str] | None = None) -> None:
         self._config_dir = config_dir
         self._os_env: dict[str, str] = dict(os_env) if os_env is not None else dict(os.environ)
 
-    def load(self) -> LoadedConfig:
-        """Load operator.yaml and resolve DATABASE_URL. Synchronous — no DB access."""
-        operator = self._load_operator()
+    def load_bootstrap(self) -> str:
+        """Load DATABASE_URL from config/.env or OS env. Synchronous — no DB access."""
         operator_env = load_dotenv_file(self._config_dir / ".env")
         database_url = (
             operator_env.get("DATABASE_URL")
@@ -61,7 +58,27 @@ class ConfigLoader:
         )
         if not database_url:
             log.warning("DATABASE_URL not set — DB operations will fail at connection time")
-        return LoadedConfig(operator=operator, database_url=database_url)
+        return database_url
+
+    def load_ui_password(self) -> str | None:
+        """Load ASTRA_UI_PASSWORD from config/.env or OS env."""
+        operator_env = load_dotenv_file(self._config_dir / ".env")
+        return (
+            operator_env.get("ASTRA_UI_PASSWORD")
+            or self._os_env.get("ASTRA_UI_PASSWORD")
+            or None
+        )
+
+    async def load_operator_from_db(self, db: Database) -> OperatorConfig:
+        """Read operator_config from the DB and return an OperatorConfig model."""
+        from astra.db.repos import OperatorConfigRepo
+
+        repo = OperatorConfigRepo(db)
+        record = await repo.get()
+        if record is None:
+            log.warning("operator_config row missing — using defaults")
+            return OperatorConfig()
+        return OperatorConfig.from_db(record)
 
     async def load_tenants_from_db(self, db: Database) -> dict[str, LoadedTenant]:
         """Query the DB and return all tenants as LoadedTenant objects."""
@@ -126,17 +143,6 @@ class ConfigLoader:
                 )
 
         return loaded
-
-    def _load_operator(self) -> OperatorConfig:
-        path = self._config_dir / "operator.yaml"
-        if not path.exists():
-            return OperatorConfig()
-        raw = yaml.safe_load(path.read_text()) or {}
-        assert_no_secret_values(raw, path="operator.yaml")
-        try:
-            return OperatorConfig.model_validate(raw)
-        except ValidationError as exc:
-            raise ConfigValidationError(f"operator.yaml: {exc}") from exc
 
 
 __all__ = [

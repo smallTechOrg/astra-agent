@@ -22,7 +22,22 @@ async def db() -> Database:
     await migrate(database)
     # Reset data between tests; CASCADE clears all child tables.
     await database.execute(
-        "TRUNCATE TABLE tenants, daemon_heartbeat, prompts RESTART IDENTITY CASCADE"
+        "TRUNCATE TABLE tenants, daemon_heartbeat, prompts, operator_secrets RESTART IDENTITY CASCADE"
+    )
+    # Reset operator_config to defaults (singleton row must always exist).
+    await database.execute(
+        """
+        UPDATE operator_config SET
+            llm_provider = 'groq',
+            llm_model = 'llama-3.3-70b-versatile',
+            llm_temperature = 0.8,
+            llm_max_tokens = 2048,
+            log_level = 'info',
+            share_sweep_cron = '*/10 * * * *',
+            startup_grace_seconds = 5,
+            updated_at = now()
+        WHERE id = 1
+        """
     )
     yield database
     await database.close()

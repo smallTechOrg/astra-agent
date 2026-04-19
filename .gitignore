@@ -55,5 +55,10 @@ config/**/.env
 config/**/.env.*
 credentials.json
 
+# UI build artifacts
+ui/node_modules/
+ui/.next/
+src/astra/ui/out/
+
 # Personal Claude Code overrides
 .claude/settings.local.json

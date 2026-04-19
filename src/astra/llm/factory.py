@@ -1,8 +1,8 @@
 """LLM client factory.
 
-Keyed on operator.yaml llm.provider. Per-tenant api_key_env override is
-resolved by the caller (secrets are injected as plain strings, not stored
-on module state — P5, spec/engineering/tenant-isolation.md).
+Keyed on operator_config.llm_provider. API key comes from operator_secrets.
+Per-tenant LLM override is resolved by the caller (secrets are injected as
+plain strings, not stored on module state — P5, spec/engineering/tenant-isolation.md).
 """
 
 from __future__ import annotations

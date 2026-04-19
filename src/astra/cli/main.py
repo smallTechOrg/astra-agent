@@ -11,6 +11,7 @@ from pathlib import Path
 import click
 
 from astra.cli.auth import auth_group
+from astra.cli.config import config_group
 from astra.cli.context import AstraContext
 from astra.cli.distribute import cadence_group, distribute_cmd
 from astra.cli.health import health_cmd
@@ -47,6 +48,7 @@ def main(
 
 
 main.add_command(tenant_group)
+main.add_command(config_group)
 main.add_command(run_cmd)
 main.add_command(health_cmd)
 main.add_command(distribute_cmd)
