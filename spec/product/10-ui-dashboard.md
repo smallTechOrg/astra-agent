@@ -40,7 +40,7 @@ The UI uses a single operator password stored in `config/.env` as `ASTRA_UI_PASS
 - Secret fields (WordPress password, Twitter keys, LinkedIn token) are rendered `type=password`, never pre-filled, and never returned from the API after save. The API returns presence only: `"set"` or `"empty"`.
 - If `ASTRA_UI_PASSWORD` is not set and the host is loopback, the UI starts in **no-auth mode** (development convenience). This is logged as a warning on startup.
 
-Reverse-proxy auth (`ui.trust_proxy_header: "X-Remote-User"` in `operator.yaml`) is planned but deferred to v2. In v1, use `ASTRA_UI_PASSWORD` and keep the UI on loopback or behind a trusted tunnel.
+Reverse-proxy auth (`trust_proxy_header` in `operator_config`) is planned but deferred to v2. In v1, use `ASTRA_UI_PASSWORD` and keep the UI on loopback or behind a trusted tunnel.
 
 ## Screen map
 
@@ -56,6 +56,8 @@ Every screen maps to one or more CLI commands. The underlying DB operations are 
 | Manual distribute | `astra distribute --tenant <id> --wp-post-id <id>` |
 | Tenant enable/disable/delete | `astra tenant enable/disable/remove` |
 | Daemon status | Read-only mirror of `astra run` startup state |
+| Operator settings | `astra config show` / `astra config set` |
+| Operator secrets | (no CLI equivalent — DB-only write path) |
 
 ## Tenant onboarding wizard
 
@@ -84,11 +86,13 @@ These rules are the UI expression of [`../engineering/secret-hygiene.md`](../eng
 
 ## Observability surface
 
-The UI exposes data already present in the DB. No new tables beyond `prompts`.
+The UI exposes data already present in the DB. No new tables beyond `operator_config` and `operator_secrets`.
 
 - **Tenant list**: `tenants` + `tenant_config` + latest `destination_state` per tenant.
 - **Tenant detail**: `publish_events` with joined `distribution_records`; `scheduled_tweets` for cadences; `destination_state`.
 - **Daemon status**: read-only — last startup time and scheduled job list (read from a `daemon_heartbeat` row the daemon writes on startup; see Failure modes below).
+- **Operator settings**: `operator_config` row — LLM provider/model, log level, cron settings.
+- **Operator secrets**: `operator_secrets` table — presence only, never values.
 - No live log streaming in v1. No Prometheus/Grafana integration.
 
 ## Prompt editor
@@ -121,6 +125,52 @@ All under `/api/`:
 - `DELETE /api/prompts/{name}?tenant_id=<id>` — delete a tenant override.
 
 All write endpoints require CSRF token. Prompt content is never treated as a secret — it is readable and editable.
+
+## Complete API surface
+
+The UI is self-sufficient: every operator action can be performed through the API. No YAML files, no DB console, no SSH needed. All endpoints under `/api/` require an authenticated session. All state-changing endpoints require a CSRF token.
+
+### Operator config
+
+- `GET /api/operator/config` — returns the operator config singleton (LLM provider, model, temperature, max_tokens, log_level, share_sweep_cron, startup_grace_seconds, updated_at).
+- `PUT /api/operator/config` — partial update. Body: `{llm_provider?: "...", llm_model?: "...", ...}`. Only provided fields are updated; others are left unchanged. Returns the updated config.
+
+### Operator secrets
+
+- `GET /api/operator/secrets` — returns presence map: `{LLM_API_KEY: "set", LINKEDIN_CLIENT_ID: "empty", ...}`. Never returns values.
+- `PUT /api/operator/secrets/{key}` — set a secret. Body: `{value: "..."}`. The key must be one of the known keys. Returns `{status: "ok"}`.
+- `DELETE /api/operator/secrets/{key}` — delete a secret. Returns `{status: "ok"}` or 404.
+
+### Tenant CRUD
+
+- `GET /api/tenants` — list all tenants with config summary and destination state.
+- `GET /api/tenants/{tenant_id}` — full tenant detail: config, destination state, secret presence.
+- `POST /api/tenants` — create a tenant. Body: `{id: "slug", name: "Display Name"}`. Creates `tenants` row and empty `tenant_config` row. Tenant starts `enabled: false`. Returns the created tenant.
+- `PUT /api/tenants/{tenant_id}` — update tenant metadata. Body: `{name?: "...", enabled?: true}`. Returns updated tenant.
+- `DELETE /api/tenants/{tenant_id}` — delete tenant and all scoped data (cascades). Returns `{status: "ok"}`.
+
+### Tenant config
+
+- `GET /api/tenants/{tenant_id}/config` — returns the tenant_config row.
+- `PUT /api/tenants/{tenant_id}/config` — partial update. Body may include any tenant_config column (source_type, source_url, source_username, source_poll_cron, linkedin_enabled, linkedin_org_id, linkedin_prompt, twitter_enabled, twitter_announcement_prompt, llm_provider, llm_model, llm_temperature, llm_max_tokens). Only provided fields are updated.
+
+### Tenant secrets
+
+- `GET /api/tenants/{tenant_id}/secrets` — returns presence map for all known secret keys.
+- `PUT /api/tenants/{tenant_id}/secrets/{key}` — set a tenant secret. Body: `{value: "..."}`. Returns `{status: "ok"}`.
+- `DELETE /api/tenants/{tenant_id}/secrets/{key}` — delete a tenant secret. Returns `{status: "ok"}` or 404.
+
+### Cadences
+
+- `GET /api/tenants/{tenant_id}/cadences` — list cadences for a tenant.
+- `POST /api/tenants/{tenant_id}/cadences` — create a cadence. Body: `{name, cron, prompt, feedback_last_n?, enabled?}`. Name validated: `[a-z0-9][a-z0-9-]*[a-z0-9]`. Cron validated server-side.
+- `PUT /api/tenants/{tenant_id}/cadences/{name}` — update a cadence. Body: partial — any of `{cron?, prompt?, feedback_last_n?, enabled?}`.
+- `DELETE /api/tenants/{tenant_id}/cadences/{name}` — delete a cadence.
+
+### Events and tweets
+
+- `GET /api/events?tenant=<id>&limit=N` — list recent publish events with distribution records.
+- `GET /api/tenants/{tenant_id}/tweets?cadence=<name>&limit=N` — list recent scheduled tweets.
 
 ## Failure modes
 

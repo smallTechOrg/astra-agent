@@ -9,6 +9,32 @@ All timestamps are `TIMESTAMPTZ` in UTC. Native PostgreSQL datetime type; compar
 ## Schema
 
 ```sql
+-- ── Operator configuration ──────────────────────────────────
+-- Singleton row. Replaces operator.yaml. Written by UI/CLI; read by daemon.
+-- Seeded with defaults on first migration.
+
+CREATE TABLE operator_config (
+    id                      INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    llm_provider            TEXT NOT NULL DEFAULT 'groq',
+    llm_model               TEXT NOT NULL DEFAULT 'llama-3.3-70b-versatile',
+    llm_temperature         REAL NOT NULL DEFAULT 0.8,
+    llm_max_tokens          INTEGER NOT NULL DEFAULT 2048,
+    log_level               TEXT NOT NULL DEFAULT 'info',
+    share_sweep_cron        TEXT NOT NULL DEFAULT '*/10 * * * *',
+    startup_grace_seconds   INTEGER NOT NULL DEFAULT 5,
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ── Operator secrets ────────────────────────────────────────
+-- Operator-level secrets. Values stored plaintext.
+-- Known keys: LLM_API_KEY, LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET
+
+CREATE TABLE operator_secrets (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ── Tenants ──────────────────────────────────────────────────
 
 CREATE TABLE tenants (
@@ -185,7 +211,8 @@ CREATE INDEX idx_scheduled_tweets_tenant_cadence_posted
 These must hold at all times. Any code that violates them is a bug.
 
 1. **Tenant scoping.** Every query against `source_state`, `destination_state`, `publish_events`, `distribution_records`, `scheduled_tweets`, `tenant_config`, `tenant_secrets`, `cadences`, `prompts` (when `tenant_id` is not null) includes `WHERE tenant_id = $1`. Unscoped queries exist only for operator reports and must be explicitly reviewed. For `prompts`, operator-level rows (`tenant_id IS NULL`) are accessible to all tenants — this is by design.
-2. **Idempotent publish detection.** Two concurrent `publish_events` inserts for the same `(tenant_id, source_name, source_post_id)` cannot both succeed. The loser's `UNIQUE` violation is expected and silently swallowed.
+2. **Operator singletons.** `operator_config` always has exactly one row with `id = 1`. The migration seeds it; it is never deleted. `operator_secrets` has at most one row per key.
+3. **Idempotent publish detection.** Two concurrent `publish_events` inserts for the same `(tenant_id, source_name, source_post_id)` cannot both succeed. The loser's `UNIQUE` violation is expected and silently swallowed.
 3. **Idempotent distribution.** Two concurrent `distribution_records` inserts for the same `(publish_event_id, platform)` cannot both succeed. The loser exits without calling the platform API.
 4. **Status transitions.** `distribution_records.status` moves `pending → sent | failed | skipped`. It never moves backward. A `sent` row is terminal.
 5. **Retry policy.** The share-sweep may re-attempt a `failed` distribution by upserting the row if the failure was transient (rate-limit, 5xx). Non-transient failures (auth, duplicate content, validation) are not auto-retried.

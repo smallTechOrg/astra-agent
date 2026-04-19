@@ -14,7 +14,7 @@ A **tenant** is the unit of multi-tenancy in Astra. One tenant represents one br
 - zero or more **cadence configurations** (independently scheduled Twitter posting jobs)
 - its own **state** in the database (all rows scoped by `tenant_id`)
 - its own **secrets** (all stored in the `tenant_secrets` DB table, scoped by `tenant_id`)
-- its own **prompt overrides** (optional, in `config/tenants/<id>/prompts/`)
+- its own **prompt overrides** (optional, in `prompts` DB table with `tenant_id`)
 
 A tenant can be `enabled: true` or `enabled: false`. Disabled tenants are loaded into memory but no jobs run for them.
 
@@ -54,9 +54,10 @@ These are the contractual properties tenants observe. The engineering patterns A
 ## Secrets
 
 ### Where secrets live
-- **Always** in the `tenant_secrets` DB table, keyed by `(tenant_id, key)`.
-- **Never** in `operator.yaml` or any YAML file.
-- Operator-level secrets (`LLM_API_KEY`, `DATABASE_URL`, `ASTRA_UI_PASSWORD`) live in `config/.env` and are never in the DB.
+- **Tenant secrets** in the `tenant_secrets` DB table, keyed by `(tenant_id, key)`.
+- **Operator secrets** (`LLM_API_KEY`, `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET`) in the `operator_secrets` DB table.
+- **Bootstrap secrets** (`DATABASE_URL`, `ASTRA_UI_PASSWORD`) in `config/.env` (needed before DB is available).
+- **Never** in source code, git history, logs, or commit messages.
 
 ### Which values are secrets
 - WordPress application password (`WP_APP_PASSWORD`)

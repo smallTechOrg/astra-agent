@@ -45,7 +45,7 @@ This is already supported; the `LLMClient` interface exists and has four concret
 
 1. Implement `LLMClient.generate_content()` and `generate_structured()`.
 2. Register in the factory.
-3. Update `operator.yaml` provider enum in [`05-config.md`](05-config.md).
+3. Update `operator_config` provider enum in [`05-config.md`](05-config.md).
 
 No spec capability file needed — LLM choice is an implementation detail, not a user-visible capability.
 

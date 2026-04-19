@@ -4,55 +4,70 @@
 
 ## Overview
 
-Astra uses a two-tier config model:
+Astra uses a two-tier config model. **Everything lives in the PostgreSQL database** except two bootstrap secrets that must exist before a DB connection can be established.
 
-- **Operator-level** — settings and secrets that apply to the whole installation. Lives in `config/operator.yaml` and `config/.env` on the filesystem.
-- **Tenant-level** — settings and secrets for each individual tenant. Lives entirely in the PostgreSQL database (`tenant_config`, `tenant_secrets`, `cadences` tables). Managed via the CLI or UI — no files to edit.
+- **Operator-level** — settings and secrets that apply to the whole installation. Stored in `operator_config` and `operator_secrets` tables in the database. Managed via the UI or CLI — no YAML files.
+- **Tenant-level** — settings and secrets for each individual tenant. Stored in `tenant_config`, `tenant_secrets`, `cadences` tables. Managed via the UI or CLI — no files to edit.
 
-There are no per-tenant YAML or `.env` files. Everything about a tenant is in the DB.
+There are no per-tenant filesystem artifacts. There is no `operator.yaml`. The only file on disk is `config/.env` with bootstrap secrets.
 
 ## File layout
 
 ```
 config/
-├── operator.yaml      # Operator-wide settings (LLM provider, log level)
-└── .env               # Operator-wide secrets (DATABASE_URL, LLM_API_KEY, ASTRA_UI_PASSWORD)
+└── .env               # Bootstrap secrets only (DATABASE_URL, ASTRA_UI_PASSWORD)
 ```
 
-There are no per-tenant filesystem artifacts. All tenant config, secrets, and prompts are in the DB.
+All config, secrets, and prompts are in the DB. Prompts are stored in the `prompts` table (see [`07-data-model.md`](07-data-model.md#schema) and [`08-prompts.md`](08-prompts.md)). Operator defaults are seeded on first migration; tenant overrides are created via the UI.
 
-Prompts are stored in the `prompts` table (see [`07-data-model.md`](07-data-model.md#schema) and [`08-prompts.md`](08-prompts.md)). Operator defaults are seeded on first migration; tenant overrides are created via the UI.
+## `config/.env` (bootstrap only)
 
-## `operator.yaml`
-
-```yaml
-# config/operator.yaml
-
-llm:
-  provider: "groq"                # openai | anthropic | groq | gemini
-  model: "llama-3.3-70b-versatile"
-  temperature: 0.8
-  max_tokens: 2048
-  # api_key comes from env: LLM_API_KEY
-
-log_level: "info"                 # debug | info | warning | error
-
-daemon:
-  share_sweep_cron: "*/10 * * * *"
-  startup_grace_seconds: 5
-```
-
-## `config/.env`
-
-Operator-level secrets. Gitignored. One flat file, plain `KEY=value`:
+Two secrets that cannot live in the DB because they are needed before a DB connection exists. Gitignored. One flat file, plain `KEY=value`:
 
 ```
 DATABASE_URL=postgresql://astra:astra@localhost:5432/astra
-LLM_API_KEY=...
 ASTRA_UI_PASSWORD=...        # Required if astra ui is bound to non-loopback
 ```
 
 `DATABASE_URL` is the single point of DB configuration. All processes (`astra run`, `astra ui`, CLI commands) read it from here.
+
+`ASTRA_UI_PASSWORD` is the operator-level password for the web UI session cookie. It must be available before the DB is connected because the session middleware is configured at app startup. On loopback, if unset, the UI starts in no-auth dev mode.
+
+No other secrets belong in `.env`. `LLM_API_KEY`, `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET`, and all other operator-level secrets are stored in `operator_secrets` in the DB and managed via the UI.
+
+## Operator configuration (in DB)
+
+Operator config is a singleton row in the `operator_config` table (see [`07-data-model.md`](07-data-model.md#schema)). The UI and CLI are the write paths. The daemon reads from the DB at startup.
+
+On first migration, Astra seeds the `operator_config` row with defaults:
+
+| Setting | Default | Notes |
+|---|---|---|
+| `llm_provider` | `groq` | `openai` \| `anthropic` \| `groq` \| `gemini` |
+| `llm_model` | `llama-3.3-70b-versatile` | Provider-specific model name |
+| `llm_temperature` | `0.8` | |
+| `llm_max_tokens` | `2048` | |
+| `log_level` | `info` | `debug` \| `info` \| `warning` \| `error` |
+| `share_sweep_cron` | `*/10 * * * *` | 5-field cron for retry sweeps |
+| `startup_grace_seconds` | `5` | Seconds to wait before scheduler starts |
+
+These values replace what was previously in `operator.yaml`. Changing them via the UI takes effect on the next daemon restart (v1; hot-reload is a future capability).
+
+## Operator secrets (in DB)
+
+Operator-level secrets are stored in the `operator_secrets` table as key/value pairs.
+
+Known keys:
+
+| Key | Purpose |
+|---|---|
+| `LLM_API_KEY` | API key for the configured LLM provider |
+| `LINKEDIN_CLIENT_ID` | LinkedIn OAuth2 client ID (operator-level, shared across tenants) |
+| `LINKEDIN_CLIENT_SECRET` | LinkedIn OAuth2 client secret |
+
+The UI renders these as write-only `type=password` fields. The API returns presence only (`"set"` or `"empty"`), never values. See [`10-ui-dashboard.md`](10-ui-dashboard.md#secret-handling-rules).
+
+The daemon reads `LLM_API_KEY` from `operator_secrets` at startup. If it is missing, the daemon logs a warning and continues — tenants that need LLM will be marked degraded.
 
 ## Tenant configuration (in DB)
 
@@ -96,7 +111,12 @@ The daemon reads secrets for a tenant by querying `tenant_secrets WHERE tenant_i
 
 ## Config validation
 
-At daemon startup, for each enabled tenant:
+At daemon startup:
+
+1. **Operator config**: `operator_config` row must exist. If missing (fresh DB), the migration seeds defaults.
+2. **Operator secrets**: `LLM_API_KEY` must be present and non-empty. Missing key logs a warning; tenants needing LLM are marked degraded.
+
+For each enabled tenant:
 
 1. **Config completeness**: `tenant_config` row exists. Missing row marks tenant degraded.
 2. **Secret resolution**: all secrets required by enabled destinations are present and non-empty. Missing secrets for a disabled destination are OK.
@@ -108,7 +128,7 @@ Failures for one tenant log a structured error and mark that tenant degraded. Ot
 
 ## Reload semantics
 
-- The daemon reads tenant config from the DB at startup.
+- The daemon reads all config (operator + tenant) from the DB at startup.
 - Planned future capability: `astra reload` triggers re-read from DB without restart. Out of scope for v1.
 - v1: restart `astra run` after any config change to pick it up.
 - The UI shows a "Restart daemon to apply" banner after writes that require a restart.
@@ -117,8 +137,10 @@ Failures for one tenant log a structured error and mark that tenant degraded. Ot
 
 These keys existed in the old Astra and are **gone**:
 
+- `config/operator.yaml` — replaced by `operator_config` table
 - `config/tenants/<id>/tenant.yaml` — replaced by `tenant_config` table
 - `config/tenants/<id>/.env` — replaced by `tenant_secrets` table
+- `config/.env → LLM_API_KEY` — replaced by `operator_secrets` table
 - `operator.yaml → database_path` — replaced by `DATABASE_URL` in `.env`
 - `wordpress:` at root (was global, now per-tenant in DB)
 - `twitter_bot.*` — engagement is out of scope

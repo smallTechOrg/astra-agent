@@ -37,7 +37,7 @@ Astra is working correctly when:
 2. A tenant's configured cadence → tweets appear on schedule, on topic, and don't repeat recent content.
 3. One tenant's expired LinkedIn token does not prevent another tenant's distribution.
 4. Restarting the daemon mid-run does not cause duplicate posts or lost events.
-5. A new tenant can be onboarded end-to-end via the UI wizard or a handful of CLI commands, with no code changes and no file editing.
+5. A new tenant can be onboarded end-to-end via the UI wizard or a handful of CLI commands, with no code changes, no file editing, and no direct DB access.
 
 ## Out of scope: engagement
 

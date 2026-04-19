@@ -139,6 +139,28 @@ Starts the operator web UI. Serves the pre-built Next.js static export (bundled 
 - **Refuses to start** with a non-loopback `--host` unless `ASTRA_UI_PASSWORD` is set in `config/.env`. This prevents accidental open exposure.
 - Does not start or stop `astra run`. The two processes are independent and share the PostgreSQL database.
 
+### Operator config
+
+```
+astra config show
+```
+Prints the current operator config from the `operator_config` table:
+
+```
+LLM provider:           groq
+LLM model:              llama-3.3-70b-versatile
+LLM temperature:        0.8
+LLM max tokens:         2048
+Log level:              info
+Share sweep cron:       */10 * * * *
+Startup grace seconds:  5
+```
+
+```
+astra config set <key> <value>
+```
+Updates a single operator config key. Valid keys: `llm_provider`, `llm_model`, `llm_temperature`, `llm_max_tokens`, `log_level`, `share_sweep_cron`, `startup_grace_seconds`. Requires daemon restart to take effect (warned on stdout).
+
 ### Version
 
 ```
@@ -157,6 +179,6 @@ Prints `astra-agent x.y.z`.
 
 These would be convenient but are **explicitly** not in v1 — if you want them, write a spec first:
 
-- `astra prompt edit` — edit prompts via CLI. Use a text editor on the prompt file directly.
+- `astra prompt edit` — edit prompts via CLI. Use the UI prompt editor.
 - `astra tenant rename` — IDs are immutable.
 - `astra reload` — hot-reload config without restart. Planned; not yet spec'd.

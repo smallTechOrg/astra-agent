@@ -9,176 +9,102 @@ One process, many tenants. One tenant failing never affects another.
 ## Requirements
 
 - Python 3.12 (see `.tool-versions`)
-- PostgreSQL 14+ (all state lives here — no SQLite, no local files for tenant config)
-- A WordPress site with the REST API enabled and an [Application Password](https://make.wordpress.org/core/2020/11/05/application-passwords-integration-guide/) created
-- LinkedIn: an organization page + an OAuth 2.0 access token with `w_member_social` scope
-- Twitter/X: API v2 credentials (API key, API secret, access token, access secret) with write permission
+- PostgreSQL 14+ (all state lives here)
+- Node.js 20+ (only needed for UI development — operators don't need it)
 - An LLM API key (OpenAI, Anthropic, Groq, or Gemini)
-
----
-
-## Install
-
-```bash
-pip install -e ".[dev]"
-```
-
-Verify:
-
-```bash
-astra --version
-```
 
 ---
 
 ## Quick start
 
-### 1. Create the config directory
+### 1. Install
+
+```bash
+pip install -e ".[dev]"
+```
+
+### 2. Create `config/.env`
 
 ```bash
 mkdir -p config
-```
-
-### 2. Write `config/operator.yaml`
-
-```yaml
-llm:
-  provider: groq                        # openai | anthropic | groq | gemini
-  model: llama-3.3-70b-versatile
-  api_key_env: LLM_API_KEY
-  max_tokens: 1024
-  temperature: 0.8
-
-log_level: info
-
-daemon:
-  share_sweep_cron: "*/10 * * * *"
-  startup_grace_seconds: 5
-```
-
-### 3. Write `config/.env` (gitignored)
-
-```
+cat > config/.env <<'EOF'
 DATABASE_URL=postgresql://astra:astra@localhost:5432/astra
-LLM_API_KEY=your-api-key-here
-ASTRA_UI_PASSWORD=your-ui-password        # required if astra ui binds non-loopback
+EOF
 ```
 
-### 4. Start PostgreSQL and create the database
+### 3. Start PostgreSQL and create the database
 
 ```bash
-createuser astra --pwprompt        # enter password "astra" (or your choice)
+createuser astra --pwprompt
 createdb astra -O astra
 ```
 
-Astra runs migrations automatically on first startup — no manual schema setup needed.
-
-### 5. Add a tenant
+### 4. Build and start the UI
 
 ```bash
-astra tenant add acme-corp --name "Acme Corporation"
+cd ui && npm install && npm run build && cd ..
+astra ui --open
 ```
 
-This creates a row in the `tenants` table with `enabled: false` and an empty `tenant_config` row. All tenant configuration is stored in the PostgreSQL database — there are no per-tenant config files.
+Opens `http://127.0.0.1:8080`. Everything — operator config, secrets, tenants, cadences, prompts — is managed from the browser. No CLI required for normal operation.
 
-Configure the tenant via the **UI wizard** (`astra ui`) or directly via the CLI and DB. See [`spec/product/06-cli.md`](spec/product/06-cli.md) for the full CLI reference.
-
-### 6. Set tenant secrets
-
-```bash
-# Secrets are stored in the tenant_secrets table, never on the filesystem.
-# Use the UI wizard or set them via the API.
-```
-
-### 7. Check health
-
-```bash
-astra health
-```
-
-Expected output:
-```
-Operator
-  Database:       ok
-  LLM (groq):     ok (key present, not tested)
-
-Tenant: acme-corp
-  WordPress:      ok
-  LinkedIn:       ok
-  Twitter:        ok
-```
-
-Fix any `FAILED` lines before proceeding.
-
-### 8. Run the daemon
+### 5. Start the daemon
 
 ```bash
 astra run
 ```
 
-The daemon polls WordPress on the configured cron, distributes new posts to LinkedIn and Twitter, and fires cadence ticks on schedule. Stop with `Ctrl+C`.
+Watches WordPress, distributes posts, runs cadences. Stop with `Ctrl+C`.
 
-### 9. Start the UI (optional)
+---
+
+## UI development
+
+The frontend is a Next.js 15 app in `ui/` with Turbopack HMR.
 
 ```bash
+# Terminal 1: Python API backend
 astra ui
+
+# Terminal 2: Next.js dev server (hot reload)
+cd ui && npm install && npm run dev
 ```
 
-Opens the operator web dashboard at `http://127.0.0.1:8080`. The UI provides tenant onboarding, health monitoring, prompt editing, and manual distribution — all backed by the same PostgreSQL database the daemon uses.
+Open `http://localhost:3000` — the Next.js dev server proxies `/api/*` to `http://127.0.0.1:8080`.
+
+To build for production (output goes to `src/astra/ui/out/`):
+
+```bash
+cd ui && npm run build
+```
+
+---
+
+## CLI reference
+
+The CLI mirrors everything the UI does. Power users can use it directly.
+
+```bash
+astra config show                        # show operator config
+astra config set llm_provider groq       # set a config value
+astra tenant list                        # list tenants
+astra tenant add acme-corp --name "Acme" # create a tenant
+astra tenant enable acme-corp            # enable a tenant
+astra tenant disable acme-corp
+astra tenant remove acme-corp --force
+astra health                             # check connectivity
+astra distribute --tenant acme-corp --wp-post-id 123
+astra cadence run --tenant acme-corp --name daily-tips
+astra events --tenant acme-corp
+astra tweets --tenant acme-corp
+astra auth linkedin --tenant acme-corp --client-id <id> --client-secret <secret>
+```
 
 ---
 
 ## Prompts
 
-Prompts are stored in the `prompts` table in the database — not on the filesystem. Two operator defaults (`linkedin_announcement`, `twitter_announcement`) are seeded by the first migration.
-
-Prompts use `{placeholder}` substitution. An optional `# variables:` header declares expected placeholders; a `---` separator splits system and user parts.
-
-Edit prompts via the UI prompt editor or the API. Tenant-specific overrides take precedence over operator defaults. See [`spec/product/08-prompts.md`](spec/product/08-prompts.md).
-
----
-
-## LinkedIn OAuth
-
-LinkedIn access tokens require an OAuth 2.0 flow. Astra has a built-in helper:
-
-```bash
-astra auth linkedin --tenant acme-corp --client-id <id> --client-secret <secret>
-```
-
-This opens a browser URL, starts a local callback server on port 8989, exchanges the code for a token, and writes it to `tenant_secrets` automatically.
-
----
-
-## Manual commands
-
-**Re-distribute a specific WordPress post:**
-
-```bash
-astra distribute --tenant acme-corp --wp-post-id 123
-astra distribute --tenant acme-corp --wp-post-id 123 --platform linkedin   # one platform only
-astra distribute --tenant acme-corp --wp-post-id 123 --force               # re-send even if already sent
-```
-
-**Fire one cadence tick immediately:**
-
-```bash
-astra cadence run --tenant acme-corp --name daily-tips
-```
-
-**Inspect recent events and their distribution status:**
-
-```bash
-astra events --tenant acme-corp
-astra events --tenant acme-corp --limit 50
-```
-
-**Inspect cadence tweet history:**
-
-```bash
-astra tweets --tenant acme-corp
-astra tweets --tenant acme-corp --cadence daily-tips
-```
+Prompts live in the database `prompts` table. Two defaults (`linkedin_announcement`, `twitter_announcement`) are seeded on first migration. Edit them from the UI prompt editor. Tenant overrides take precedence over operator defaults. See [`spec/product/08-prompts.md`](spec/product/08-prompts.md).
 
 ---
 
@@ -186,34 +112,21 @@ astra tweets --tenant acme-corp --cadence daily-tips
 
 ```
 config/
-├── operator.yaml                 # Operator-wide settings
-└── .env                          # Gitignored — DATABASE_URL, LLM key, UI password
+└── .env          # DATABASE_URL (required), ASTRA_UI_PASSWORD (optional)
 ```
 
-All tenant config, secrets, cadences, and prompts are in the PostgreSQL database. There are no per-tenant filesystem artifacts.
+Everything else is in the database — operator config, secrets, tenant config, tenant secrets, cadences, and prompts.
 
 ---
 
-## Supported LLM providers
+## LLM providers
 
-| `provider` value | Model examples |
+| Provider | Model examples |
 |---|---|
 | `openai` | `gpt-4o-mini`, `gpt-4o` |
 | `anthropic` | `claude-haiku-4-5-20251001`, `claude-sonnet-4-6` |
 | `groq` | `llama-3.3-70b-versatile`, `mixtral-8x7b-32768` |
 | `gemini` | `gemini-1.5-flash`, `gemini-1.5-pro` |
-
----
-
-## Tenant management
-
-```bash
-astra tenant list                        # show all tenants with status
-astra tenant add <id> [--name "Name"]    # create tenant in DB
-astra tenant enable <id>                 # set enabled: true (restart daemon to apply)
-astra tenant disable <id>                # set enabled: false
-astra tenant remove <id> [--force]       # delete all DB rows for this tenant
-```
 
 ---
 

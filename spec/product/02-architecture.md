@@ -18,6 +18,7 @@
                             │  reads/writes
                   ┌─────────▼──────────────────────────────┐
                   │            PostgreSQL DB               │
+                  │  operator_config · operator_secrets    │
                   │  tenants · tenant_config               │
                   │  tenant_secrets · cadences             │
                   │  source_state · destination_state      │
@@ -90,7 +91,7 @@ Unchanged from current code. Abstract client over OpenAI / Anthropic / Groq / Ge
 
 Numbered to make this mechanically verifiable:
 
-1. `AstraDaemon` starts. Loads all tenants from `config/tenants/`. Skips disabled tenants.
+1. `AstraDaemon` starts. Reads operator config from `operator_config` table. Loads all tenants from `tenants` + `tenant_config` tables. Skips disabled tenants.
 2. For each enabled tenant, schedules a `source.poll` job on the tenant's configured cron.
 3. At tick: `WordPressSource.poll(tenant)` queries WP REST for posts published after `source_state.last_seen_at`.
 4. For each post not already in `publish_events` (uniqueness on `(tenant_id, source_name, source_post_id)`), insert a row. Update `source_state.last_seen_at`.
@@ -113,7 +114,7 @@ Numbered to make this mechanically verifiable:
 
 | Boundary | Trusted? | Notes |
 |---|---|---|
-| Operator-written config YAML | Yes | `operator.yaml` is assumed not adversarial. |
+| Operator DB config | Yes | `operator_config` is assumed not adversarial. |
 | Tenant-provided credentials | Yes, from operator POV | Stored in `tenant_secrets` table; never in YAML. |
 | UI HTTP requests | Yes (authenticated) | UI binds loopback by default; all state-changing endpoints require the operator session. |
 | WordPress REST API responses | No | Validated against response models before use. Untrusted HTML is never executed. |
@@ -124,7 +125,7 @@ Numbered to make this mechanically verifiable:
 
 - **Daemon** (`astra run`): single async Python process. One shared `asyncio` event loop. Scheduler: APScheduler's `AsyncIOScheduler`.
 - **UI server** (`astra ui`): separate async Python process running FastAPI. Serves the pre-built Next.js static export and a JSON API over the same PostgreSQL database.
-- **Persistence**: PostgreSQL, accessed via `asyncpg`. Both processes connect to the same DB. Daemon writes tenant state; UI reads state and writes tenant config/secrets.
+- **Persistence**: PostgreSQL, accessed via `asyncpg`. Both processes connect to the same DB. Daemon writes tenant state; UI reads state and writes all config (operator and tenant).
 - Concurrency across tenants is achieved by cooperative async scheduling, not threads. A slow WP site for tenant A yields to other tenants' jobs.
 
 ## What lives where in code (contractually)

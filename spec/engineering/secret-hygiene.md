@@ -12,8 +12,8 @@ For code purposes, treat any field whose name matches `*_token`, `*_secret`, `*_
 
 | Location | Secrets allowed? |
 |---|---|
-| `config/operator.yaml`, `config/tenants/<id>/tenant.yaml` | ❌ Never |
-| `config/.env`, `config/tenants/<id>/.env` | ✅ Yes (gitignored) |
+| `operator_secrets` / `tenant_secrets` DB tables | ✅ Yes (primary store) |
+| `config/.env` | ✅ Yes (bootstrap only: `DATABASE_URL`, `ASTRA_UI_PASSWORD`) |
 | OS environment variables | ✅ Yes |
 | Source code | ❌ Never, including tests |
 | Git history | ❌ Never |
