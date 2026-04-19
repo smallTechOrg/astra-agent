@@ -1,11 +1,16 @@
-# Capability: Twitter scheduled cadence
+# Twitter scheduled cadence (SUPERSEDED)
 
-**Status:** DRAFT
-**Component:** `TwitterCadence` (implements the `Cadence` abstraction)
+**Status:** SUPERSEDED — this per-platform capability spec is replaced by the agentic model. Cadences are now platform-agnostic (see [`../07-data-model.md`](../07-data-model.md#schema) `cadences` and `cadence_posts` tables). Platform knowledge is runtime data. See [`platform-knowledge-seeds.md`](platform-knowledge-seeds.md#x--twitter) for the researched platform details.
+
+The feasibility research and behavioral spec below are preserved for reference.
 
 ## Purpose
 
 Keep a tenant's X/Twitter feed active between blog announcements by posting one LLM-generated tweet per cadence tick, on a cadence-configured cron, about a cadence-configured topic, avoiding repetition of recent cadence tweets.
+
+## Feasibility
+
+Same blocker as `twitter-blog-announcement.md` — `POST /2/tweets` requires the paid Basic tier. This capability cannot function on the Free tier. See the [Twitter announcement feasibility section](twitter-blog-announcement.md#feasibility) for details and alternatives.
 
 ## Trigger
 

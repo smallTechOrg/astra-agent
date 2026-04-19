@@ -15,6 +15,9 @@ venv/
 env/
 .envrc
 
+# uv / pip lock files
+uv.lock
+
 # IDE
 .vscode/
 .idea/
@@ -51,6 +54,11 @@ logs/
 config/**/.env
 config/**/.env.*
 credentials.json
+
+# UI build artifacts
+ui/node_modules/
+ui/.next/
+src/astra/ui/out/
 
 # Personal Claude Code overrides
 .claude/settings.local.json

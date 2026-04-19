@@ -17,9 +17,10 @@ First pass, in order:
 4. [`product/04-capabilities/`](product/04-capabilities/) — one file per behaviour, uniform template (below)
 5. [`product/05-config.md`](product/05-config.md) — config schema and secrets
 6. [`product/06-cli.md`](product/06-cli.md) — command surface
-7. [`product/07-data-model.md`](product/07-data-model.md) — SQLite schema
+7. [`product/07-data-model.md`](product/07-data-model.md) — PostgreSQL schema
 8. [`product/08-prompts.md`](product/08-prompts.md) — LLM prompt contracts
 9. [`product/09-extensibility.md`](product/09-extensibility.md) — how to add platforms, sources, cadences
+10. [`product/10-ui-dashboard.md`](product/10-ui-dashboard.md) — operator web UI
 
 ## Engineering (`engineering/`)
 
@@ -28,7 +29,8 @@ Rules that govern how code gets written. Every rule applies everywhere unless it
 - [`engineering/spec-driven.md`](engineering/spec-driven.md) — the rule (spec first, code second)
 - [`engineering/tenant-isolation.md`](engineering/tenant-isolation.md) — patterns that maintain the guarantees in [`product/03-tenancy.md`](product/03-tenancy.md)
 - [`engineering/secret-hygiene.md`](engineering/secret-hygiene.md) — how secrets enter, travel, and exit the system
-- [`engineering/code-style.md`](engineering/code-style.md) — canonical libraries and structural conventions
+- [`engineering/tech-stack.md`](engineering/tech-stack.md) — language choice, runtime pin, canonical libraries
+- [`engineering/code-style.md`](engineering/code-style.md) — structural conventions and patterns
 - [`engineering/commits.md`](engineering/commits.md) — commit and PR hygiene
 
 Workflows — repeatable procedures invoked by Claude Code commands/agents and Copilot prompts. Change the workflow here; tool-specific files are thin pointers.

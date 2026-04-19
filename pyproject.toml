@@ -1,0 +1,92 @@
+[project]
+name = "astra-agent"
+version = "0.1.0"
+description = "Multi-tenant social distribution agent for WordPress blogs"
+requires-python = ">=3.12"
+readme = "README.md"
+
+dependencies = [
+    "httpx>=0.27",
+    "asyncpg>=0.29",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "itsdangerous>=2.2",
+    "cryptography>=42.0",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "structlog>=24.1",
+    "tenacity>=8.3",
+    "apscheduler>=3.10",
+    "click>=8.1",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    "croniter>=2.0",
+    "oauthlib>=3.2",
+    "requests-oauthlib>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-PyYAML",
+]
+
+[project.scripts]
+astra = "astra.cli.main:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "TCH", # flake8-type-checking
+]
+ignore = [
+    "E501",  # line length — handled by formatter
+    "B008",  # function call in default arg (click uses this idiom)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["B011"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/astra"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = [
+    "asyncpg.*",
+    "apscheduler.*",
+    "requests_oauthlib.*",
+    "oauthlib.*",
+    "croniter.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]

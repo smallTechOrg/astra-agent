@@ -6,6 +6,7 @@
 
 - **One logical change per commit.** Not "one file per commit" — sometimes a logical change spans files (spec + code + test are often one change). Not "one commit per session" either — if you've done three things, make three commits.
 - **Commit every hour.** If a task is done, commit it — don't batch a day's work into one commit. Frequent commits keep the diff reviewable and make `git revert` / `git bisect` precise tools instead of blunt ones.
+- **AI agents: commit before finishing.** When an AI agent completes a logical unit of work (tests pass, lint clean), it must commit and push before ending the interaction. Never leave completed work uncommitted in the working tree.
 - **Never amend published commits.** Create a new commit instead.
 - **Never `--force` push to `main`.** Ask first for any branch.
 - **Never `--no-verify`** to bypass a pre-commit hook. Fix the underlying issue.
