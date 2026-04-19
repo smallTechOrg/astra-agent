@@ -1,11 +1,28 @@
-# Capability: Twitter blog announcement
+# Twitter blog announcement (SUPERSEDED)
 
-**Status:** DRAFT
-**Component:** `TwitterDestination.publish_announcement` (implements the `Destination` abstraction)
+**Status:** SUPERSEDED — this per-platform capability spec is replaced by the agentic model. Platform knowledge is runtime data, not a coded capability. See [`platform-knowledge-seeds.md`](platform-knowledge-seeds.md#x--twitter) for the researched platform details.
+
+The feasibility research below is preserved for reference. The Twitter section in `platform-knowledge-seeds.md` is the canonical source.
 
 ## Purpose
 
 Announce a newly-published WordPress post on the tenant's X/Twitter account as a single tweet.
+
+## Feasibility
+
+**BLOCKER as of April 2026.**
+
+| Question | Finding |
+|---|---|
+| API access model | X API v2 `POST /2/tweets` requires the **Basic** tier or higher. The Free tier is **read-only** (post lookup, user lookup) — it cannot create tweets. Basic costs **$200/month** (as of 2025). Pay-per-use credits are an alternative but similarly expensive at scale. |
+| Approval lead time | None beyond payment — Basic access is instant once subscribed. |
+| Rate limits (Basic) | 50 tweets per user per 24 hours — adequate for distribution + cadence. |
+| ToS risks | Automated posting via the API is permitted on paid tiers. The Free tier explicitly prohibits tweet creation. |
+| Alternatives | **Bluesky** — AT Protocol has a free, open write API with no paid tier requirement. **Mastodon** — free write API on any instance. Both serve the "developer/tech audience" segment that Twitter historically served. A platform-agnostic `Destination` interface means swapping Twitter for Bluesky/Mastodon is a spec + implementation change, not an architecture change. |
+
+**What would unblock this:** Either (a) X re-introduces free write access, (b) the operator accepts the $200/month cost and the spec is updated to document it as a paid prerequisite, or (c) Twitter is replaced with a free-tier alternative (Bluesky, Mastodon) as the short-form distribution destination.
+
+**Recommendation:** Replace Twitter with Bluesky as the default short-form destination. Add Twitter as an opt-in destination for operators who have a paid X API subscription.
 
 ## Trigger
 

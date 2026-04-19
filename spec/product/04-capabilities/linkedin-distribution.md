@@ -1,11 +1,28 @@
-# Capability: LinkedIn distribution
+# LinkedIn distribution (SUPERSEDED)
 
-**Status:** DRAFT
-**Component:** `LinkedInOrgDestination` (implements the `Destination` abstraction)
+**Status:** SUPERSEDED — this per-platform capability spec is replaced by the agentic model. Platform knowledge is runtime data, not a coded capability. See [`platform-knowledge-seeds.md`](platform-knowledge-seeds.md#linkedin) for the researched platform details.
+
+The feasibility research below is preserved for reference. The LinkedIn section in `platform-knowledge-seeds.md` is the canonical source.
 
 ## Purpose
 
 Announce a newly-published WordPress post on the tenant's LinkedIn organization page.
+
+## Feasibility
+
+**BLOCKER as of April 2026.**
+
+| Question | Finding |
+|---|---|
+| API access model | LinkedIn's Community Management API (required for `POST /rest/posts` to organization pages) requires an **approved LinkedIn application**. Personal token creation (3-legged OAuth for "Sign In with LinkedIn") does NOT grant org-page write access — that requires the `w_organization_social` scope, which is only available after app review. |
+| Approval lead time | LinkedIn app review takes **approximately 30 days**. This is a one-time gate per OAuth application (not per tenant), but it blocks any org-page posting until approved. The review requires a live app, a privacy policy URL, and a justification for the requested scopes. |
+| Rate limits | Once approved: 200 API calls per day per organization for posting. Adequate for distribution use. |
+| ToS risks | Automated posting to org pages via an approved app is permitted. The LinkedIn Developer Agreement requires that content is "authorized by the member or organization admin." Astra's use case (operator-authorized distribution) complies. |
+| Alternatives | **Personal profile posting** via the basic `w_member_social` scope is available without app review and works immediately after OAuth consent. However, the current spec explicitly excludes personal-profile posting (see `01-vision.md`). This decision should be revisited: for many small orgs, posting from the founder's personal profile is actually more effective than the org page. |
+
+**What would unblock this:** (a) Submit the OAuth app for LinkedIn review and wait ~30 days. This is a one-time setup cost, not per-tenant. (b) Alternatively, support personal-profile posting as a "fast path" that works immediately, with org-page posting as an upgrade once the app is approved. (c) Drop LinkedIn in favor of a platform with no approval gate.
+
+**Recommendation:** Support both personal-profile and org-page posting. Personal-profile works immediately (no review needed) and is the default. Org-page posting is an opt-in that requires the operator to have completed the LinkedIn app review process. Update `01-vision.md` to remove the blanket exclusion of personal-profile posting.
 
 ## Trigger
 

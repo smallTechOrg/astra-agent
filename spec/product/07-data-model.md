@@ -10,7 +10,7 @@ All timestamps are `TIMESTAMPTZ` in UTC. Native PostgreSQL datetime type; compar
 
 ```sql
 -- ── Operator configuration ──────────────────────────────────
--- Singleton row. Replaces operator.yaml. Written by UI/CLI; read by daemon.
+-- Singleton row. Written by UI/CLI; read by daemon.
 -- Seeded with defaults on first migration.
 
 CREATE TABLE operator_config (
@@ -20,14 +20,15 @@ CREATE TABLE operator_config (
     llm_temperature         REAL NOT NULL DEFAULT 0.8,
     llm_max_tokens          INTEGER NOT NULL DEFAULT 2048,
     log_level               TEXT NOT NULL DEFAULT 'info',
-    share_sweep_cron        TEXT NOT NULL DEFAULT '*/10 * * * *',
+    sweep_cron              TEXT NOT NULL DEFAULT '*/10 * * * *',
     startup_grace_seconds   INTEGER NOT NULL DEFAULT 5,
+    web_scraper_url         TEXT,                 -- URL of the external web-scraper service (nullable, browser tool disabled if unset)
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- ── Operator secrets ────────────────────────────────────────
 -- Operator-level secrets. Values stored plaintext.
--- Known keys: LLM_API_KEY, LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET
+-- Known keys: LLM_API_KEY
 
 CREATE TABLE operator_secrets (
     key         TEXT PRIMARY KEY,
@@ -46,7 +47,7 @@ CREATE TABLE tenants (
 );
 
 -- ── Tenant configuration ─────────────────────────────────────
--- Replaces per-tenant tenant.yaml. Written by CLI and UI; read by daemon.
+-- Core tenant settings. Platform-specific config lives in tenant_platforms.
 
 CREATE TABLE tenant_config (
     tenant_id               TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
@@ -55,13 +56,8 @@ CREATE TABLE tenant_config (
     source_url              TEXT,
     source_username         TEXT,
     source_poll_cron        TEXT NOT NULL DEFAULT '*/5 * * * *',
-    -- LinkedIn destination
-    linkedin_enabled        BOOLEAN NOT NULL DEFAULT false,
-    linkedin_org_id         TEXT,
-    linkedin_prompt         TEXT NOT NULL DEFAULT 'linkedin_announcement',
-    -- Twitter destination
-    twitter_enabled         BOOLEAN NOT NULL DEFAULT false,
-    twitter_announcement_prompt TEXT NOT NULL DEFAULT 'twitter_announcement',
+    -- Approval mode
+    approval_mode           BOOLEAN NOT NULL DEFAULT false,
     -- Optional per-tenant LLM override
     llm_provider            TEXT,
     llm_model               TEXT,
@@ -71,10 +67,9 @@ CREATE TABLE tenant_config (
 );
 
 -- ── Tenant secrets ───────────────────────────────────────────
--- Replaces per-tenant .env files. Values stored plaintext.
--- Known keys: WP_APP_PASSWORD, LINKEDIN_ACCESS_TOKEN,
---             TWITTER_API_KEY, TWITTER_API_SECRET,
---             TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET
+-- Per-tenant secrets. Values stored plaintext.
+-- Keys are platform-specific (e.g. WP_APP_PASSWORD, BLUESKY_APP_PASSWORD,
+-- MASTODON_ACCESS_TOKEN, DEVTO_API_KEY, LINKEDIN_ACCESS_TOKEN, etc.)
 
 CREATE TABLE tenant_secrets (
     tenant_id   TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -84,13 +79,62 @@ CREATE TABLE tenant_secrets (
     PRIMARY KEY (tenant_id, key)
 );
 
+-- ── Tenant platforms ─────────────────────────────────────────
+-- Which platforms a tenant distributes to. One row per platform per tenant.
+-- The platform name is a free-text identifier (e.g. "bluesky", "mastodon",
+-- "devto", "linkedin", "twitter", "reddit", "facebook").
+-- No hardcoded enum — any platform the agent has knowledge about can be added.
+
+CREATE TABLE tenant_platforms (
+    id          BIGSERIAL PRIMARY KEY,
+    tenant_id   TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    platform    TEXT NOT NULL,                  -- free-text platform identifier
+    enabled     BOOLEAN NOT NULL DEFAULT true,
+    config      JSONB NOT NULL DEFAULT '{}',   -- platform-specific config (e.g. mastodon instance URL, subreddit name)
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, platform)
+);
+
+-- ── Platform knowledge store ─────────────────────────────────
+-- Runtime-learned knowledge about how to interact with each platform.
+-- Rows with tenant_id IS NULL are global defaults (shipped as seed data).
+-- Rows with a tenant_id are tenant-specific overrides.
+-- Resolution: tenant row → global row.
+
+CREATE TABLE platform_knowledge (
+    id              BIGSERIAL PRIMARY KEY,
+    tenant_id       TEXT REFERENCES tenants(id) ON DELETE CASCADE,
+    platform        TEXT NOT NULL,
+    access_method   TEXT NOT NULL DEFAULT 'browser',  -- 'api' | 'browser' | 'both'
+    -- API knowledge (nullable — not all platforms have APIs)
+    api_base_url    TEXT,
+    api_auth_type   TEXT,                      -- 'bearer_token' | 'api_key' | 'oauth2' | 'app_password'
+    api_endpoints   JSONB,                     -- { "post": { "method": "POST", "path": "/...", "body_template": {...} }, ... }
+    -- Browser knowledge (nullable — fallback to browser if API unavailable)
+    browser_compose_url TEXT,
+    browser_hints       JSONB,                 -- hints for the agent: { "text_field": "main textarea", "submit_button": "Post", ... }
+    -- Content constraints
+    content_constraints JSONB NOT NULL DEFAULT '{}',  -- { "max_text_length": 300, "supports_images": true, ... }
+    -- Lessons learned by the agent (append-only by agent, editable by operator)
+    lessons         JSONB NOT NULL DEFAULT '[]',       -- ["Rate limit: 1666/day", "Images must be uploaded as blobs first", ...]
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, platform)
+);
+
+-- Partial unique index for global defaults (tenant_id IS NULL).
+CREATE UNIQUE INDEX idx_platform_knowledge_global_default
+    ON platform_knowledge (platform) WHERE tenant_id IS NULL;
+
 -- ── Cadences ─────────────────────────────────────────────────
--- Replaces cadences[] array in tenant.yaml. One row per cadence job.
+-- Independently scheduled posting jobs. One row per cadence.
 
 CREATE TABLE cadences (
     id              BIGSERIAL PRIMARY KEY,
     tenant_id       TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
+    platform        TEXT NOT NULL,              -- which platform this cadence posts to
     cron            TEXT NOT NULL,
     prompt          TEXT NOT NULL,
     feedback_last_n INTEGER NOT NULL DEFAULT 20,
@@ -129,56 +173,126 @@ CREATE TABLE source_state (
     PRIMARY KEY (tenant_id, source_name)
 );
 
-CREATE TABLE destination_state (
-    tenant_id    TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    platform     TEXT NOT NULL,                   -- 'linkedin' | 'twitter'
-    needs_reauth BOOLEAN NOT NULL DEFAULT false,
-    degraded     BOOLEAN NOT NULL DEFAULT false,
-    last_error   TEXT,
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (tenant_id, platform)
-);
-
 -- ── Publish events ───────────────────────────────────────────
+-- Content detected from sources. Generic: supports blogs, media, etc.
 
 CREATE TABLE publish_events (
-    id              BIGSERIAL PRIMARY KEY,
-    tenant_id       TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    source_name     TEXT NOT NULL,
-    source_post_id  TEXT NOT NULL,
-    title           TEXT NOT NULL,
-    url             TEXT NOT NULL,
-    excerpt         TEXT,
-    published_at    TIMESTAMPTZ NOT NULL,
-    detected_at     TIMESTAMPTZ NOT NULL,
-    UNIQUE (tenant_id, source_name, source_post_id)
+    id                BIGSERIAL PRIMARY KEY,
+    tenant_id         TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    source_name       TEXT NOT NULL,
+    source_content_id TEXT NOT NULL,             -- unique ID from the source (e.g. WP post ID)
+    content_type      TEXT NOT NULL,             -- 'blog' | 'media' | future types
+    title             TEXT,                      -- nullable: media may not have a title
+    url               TEXT,                      -- nullable: media may not have a URL
+    body              TEXT,                      -- full body / description
+    excerpt           TEXT,
+    images            JSONB NOT NULL DEFAULT '[]',  -- [{"url": "...", "alt": "..."}]
+    metadata          JSONB NOT NULL DEFAULT '{}',  -- source-specific extra data
+    published_at      TIMESTAMPTZ NOT NULL,
+    detected_at       TIMESTAMPTZ NOT NULL,
+    UNIQUE (tenant_id, source_name, source_content_id)
 );
 
 CREATE INDEX idx_publish_events_tenant_detected
     ON publish_events (tenant_id, detected_at DESC);
 
--- ── Distribution records ─────────────────────────────────────
+-- ── Distribution plans ───────────────────────────────────────
+-- One plan per publish event. Contains the agent's overall decision.
 
-CREATE TABLE distribution_records (
+CREATE TABLE distribution_plans (
     id                BIGSERIAL PRIMARY KEY,
     tenant_id         TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     publish_event_id  BIGINT NOT NULL REFERENCES publish_events(id) ON DELETE CASCADE,
-    platform          TEXT NOT NULL,
-    status            TEXT NOT NULL,              -- 'pending' | 'sent' | 'failed' | 'skipped'
-    platform_post_id  TEXT,
-    copy              TEXT,
-    error             TEXT,
-    attempted_at      TIMESTAMPTZ NOT NULL,
-    completed_at      TIMESTAMPTZ,
-    UNIQUE (publish_event_id, platform)
+    status            TEXT NOT NULL DEFAULT 'planning',
+                      -- 'planning' | 'pending_approval' | 'executing' | 'completed' | 'partial' | 'failed' | 'rejected'
+    rejection_reason  TEXT,                      -- set when status = 'rejected'
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (publish_event_id)                   -- one plan per event
 );
 
-CREATE INDEX idx_distribution_records_tenant_status
-    ON distribution_records (tenant_id, status);
+CREATE INDEX idx_distribution_plans_tenant_status
+    ON distribution_plans (tenant_id, status);
+
+-- ── Plan items ───────────────────────────────────────────────
+-- One row per platform per distribution plan.
+
+CREATE TABLE plan_items (
+    id                BIGSERIAL PRIMARY KEY,
+    plan_id           BIGINT NOT NULL REFERENCES distribution_plans(id) ON DELETE CASCADE,
+    tenant_id         TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    platform          TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'pending',
+                      -- 'pending' | 'approved' | 'executing' | 'sent' | 'failed' | 'skipped'
+    copy              TEXT,                      -- generated platform-specific copy
+    media_refs        JSONB NOT NULL DEFAULT '[]',  -- media to attach
+    reasoning         TEXT,                      -- agent's reasoning for this platform selection + copy
+    skip_reason       TEXT,                      -- set when status = 'skipped'
+    platform_post_id  TEXT,                      -- set on successful post
+    platform_post_url TEXT,                      -- URL to the published post
+    error             TEXT,                      -- set on failure
+    tool_used         TEXT,                      -- 'http' | 'browser' — which tool executed this
+    executed_at       TIMESTAMPTZ,
+    UNIQUE (plan_id, platform)
+);
+
+CREATE INDEX idx_plan_items_plan
+    ON plan_items (plan_id);
+
+-- ── Action traces ────────────────────────────────────────────
+-- Every action the agent takes is recorded here. Immutable, append-only.
+-- This is the core traceability/debuggability table.
+
+CREATE TABLE action_traces (
+    id              BIGSERIAL PRIMARY KEY,
+    trace_id        UUID NOT NULL DEFAULT gen_random_uuid(),
+    plan_id         BIGINT REFERENCES distribution_plans(id) ON DELETE CASCADE,
+    plan_item_id    BIGINT REFERENCES plan_items(id) ON DELETE CASCADE,
+    tenant_id       TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    sequence        INTEGER NOT NULL,            -- ordering within a plan/plan_item
+    action_type     TEXT NOT NULL,
+                    -- 'llm_call' | 'http_request' | 'http_response' |
+                    -- 'browser_navigate' | 'browser_fill' | 'browser_click' |
+                    -- 'browser_upload' | 'browser_read' |
+                    -- 'knowledge_read' | 'knowledge_write' |
+                    -- 'decision' | 'error' | 'skip'
+    summary         TEXT NOT NULL,               -- human-readable one-liner
+    input           JSONB,                       -- what went into the action (redacted secrets)
+    output          JSONB,                       -- what came back (truncated if large)
+    duration_ms     INTEGER,
+    parent_trace_id UUID,                        -- for nesting (e.g. browser actions under "post to platform")
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_action_traces_plan
+    ON action_traces (plan_id, sequence);
+CREATE INDEX idx_action_traces_plan_item
+    ON action_traces (plan_item_id, sequence);
+CREATE INDEX idx_action_traces_tenant_created
+    ON action_traces (tenant_id, created_at DESC);
+
+-- ── Cadence posts ────────────────────────────────────────────
+-- Records of cadence-generated posts (replaces scheduled_tweets).
+-- Platform-agnostic — cadences can post to any platform.
+
+CREATE TABLE cadence_posts (
+    id               BIGSERIAL PRIMARY KEY,
+    tenant_id        TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    cadence_name     TEXT NOT NULL,
+    platform         TEXT NOT NULL,
+    text             TEXT,
+    platform_post_id TEXT,
+    platform_post_url TEXT,
+    status           TEXT NOT NULL,              -- 'sent' | 'failed' | 'skipped'
+    error            TEXT,
+    posted_at        TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX idx_cadence_posts_tenant_cadence_posted
+    ON cadence_posts (tenant_id, cadence_name, posted_at DESC);
 
 -- ── Daemon heartbeat ────────────────────────────────────────
--- Singleton row written by `astra run` on startup. Read by `astra ui`
--- to determine whether the daemon is running and what it loaded.
+-- Singleton row written by `astra run` on startup. Read by `astra ui`.
 
 CREATE TABLE daemon_heartbeat (
     id           INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
@@ -188,37 +302,24 @@ CREATE TABLE daemon_heartbeat (
     job_count    INTEGER NOT NULL DEFAULT 0,
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- ── Scheduled (cadence) tweets ───────────────────────────────
-
-CREATE TABLE scheduled_tweets (
-    id               BIGSERIAL PRIMARY KEY,
-    tenant_id        TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    cadence_name     TEXT NOT NULL,
-    text             TEXT,
-    platform_post_id TEXT,
-    status           TEXT NOT NULL,              -- 'sent' | 'failed' | 'skipped'
-    error            TEXT,
-    posted_at        TIMESTAMPTZ NOT NULL
-);
-
-CREATE INDEX idx_scheduled_tweets_tenant_cadence_posted
-    ON scheduled_tweets (tenant_id, cadence_name, posted_at DESC);
 ```
 
 ## Invariants
 
 These must hold at all times. Any code that violates them is a bug.
 
-1. **Tenant scoping.** Every query against `source_state`, `destination_state`, `publish_events`, `distribution_records`, `scheduled_tweets`, `tenant_config`, `tenant_secrets`, `cadences`, `prompts` (when `tenant_id` is not null) includes `WHERE tenant_id = $1`. Unscoped queries exist only for operator reports and must be explicitly reviewed. For `prompts`, operator-level rows (`tenant_id IS NULL`) are accessible to all tenants — this is by design.
+1. **Tenant scoping.** Every query against tenant-scoped tables includes `WHERE tenant_id = $1`. Unscoped queries exist only for operator reports and must be explicitly reviewed. For `prompts` and `platform_knowledge`, global rows (`tenant_id IS NULL`) are accessible to all tenants — this is by design.
 2. **Operator singletons.** `operator_config` always has exactly one row with `id = 1`. The migration seeds it; it is never deleted. `operator_secrets` has at most one row per key.
-3. **Idempotent publish detection.** Two concurrent `publish_events` inserts for the same `(tenant_id, source_name, source_post_id)` cannot both succeed. The loser's `UNIQUE` violation is expected and silently swallowed.
-3. **Idempotent distribution.** Two concurrent `distribution_records` inserts for the same `(publish_event_id, platform)` cannot both succeed. The loser exits without calling the platform API.
-4. **Status transitions.** `distribution_records.status` moves `pending → sent | failed | skipped`. It never moves backward. A `sent` row is terminal.
-5. **Retry policy.** The share-sweep may re-attempt a `failed` distribution by upserting the row if the failure was transient (rate-limit, 5xx). Non-transient failures (auth, duplicate content, validation) are not auto-retried.
-6. **Monotonic `last_seen_at`.** `source_state.last_seen_at` never moves backward.
-7. **Secret isolation.** `tenant_secrets` rows for tenant A are never read in the context of tenant B. The tenant_id parameter is always bound before any secret lookup.
-8. **Config consistency.** `tenant_config` and `cadences` rows are always created atomically with the `tenants` row. A `tenants` row without a matching `tenant_config` row is an error state.
+3. **Idempotent publish detection.** Two concurrent `publish_events` inserts for the same `(tenant_id, source_name, source_content_id)` cannot both succeed. The loser's `UNIQUE` violation is expected and silently swallowed.
+4. **One plan per event.** The `UNIQUE (publish_event_id)` constraint on `distribution_plans` ensures a content event is never planned twice. If re-distribution is needed, the operator uses the manual distribute command which creates a new publish event.
+5. **One item per platform per plan.** `UNIQUE (plan_id, platform)` on `plan_items`. No double-posting.
+6. **Status transitions.** `plan_items.status` moves `pending → approved → executing → sent | failed | skipped`. It never moves backward. A `sent` row is terminal.
+7. **Traces are immutable.** `action_traces` is append-only. Rows are never updated or deleted (except by retention pruning, future).
+8. **Monotonic `last_seen_at`.** `source_state.last_seen_at` never moves backward.
+9. **Secret isolation.** `tenant_secrets` rows for tenant A are never read in the context of tenant B. The tenant_id parameter is always bound before any secret lookup.
+10. **Config consistency.** `tenant_config` row is always created atomically with the `tenants` row. A `tenants` row without a matching `tenant_config` row is an error state.
+11. **Knowledge resolution.** Platform knowledge lookups always check tenant-scoped override first, then global default. The agent never bypasses this resolution order.
+12. **Trace completeness.** Every tool invocation (LLM, HTTP, browser) produces at least one `action_traces` row. Silent actions are bugs.
 
 ## Retention
 
